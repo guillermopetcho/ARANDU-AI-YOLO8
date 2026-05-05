@@ -1,0 +1,54 @@
+# =========================================================
+# ARANDU + YOLOv8 (Backbone SSL MoCo ResNet50)
+# =========================================================
+
+# Parámetros
+nc: 1  # número de clases (ajustar)
+depth_multiple: 1.0
+width_multiple: 1.0
+
+# =========================================================
+# BACKBONE
+# =========================================================
+# AranduBackbone devuelve 3 escalas: [P3, P4, P5]
+# Channels originales:
+# P3: 512, P4: 1024, P5: 2048
+
+backbone:
+  # Backbone SSL
+  - [-1, 1, AranduYOLOWrapper, []]   # index 0
+
+  # Adaptadores de canal (OBLIGATORIOS)
+  - [0, 1, Conv, [256, 1, 1]]     # index 1 (P3: 512 → 256)
+  - [0, 1, Conv, [512, 1, 1]]     # index 2 (P4: 1024 → 512)
+  - [0, 1, Conv, [1024, 1, 1]]    # index 3 (P5: 2048 → 1024)
+
+# =========================================================
+# NECK (PAN-FPN estilo YOLOv8)
+# =========================================================
+
+neck:
+  # Upsample + concat pathway
+  - [3, 1, nn.Upsample, [None, 2, "nearest"]]   # 4
+  - [[4, 2], 1, Concat, [1]]                   # 5
+  - [5, 3, C2f, [512]]                         # 6
+
+  - [6, 1, nn.Upsample, [None, 2, "nearest"]]  # 7
+  - [[7, 1], 1, Concat, [1]]                   # 8
+  - [8, 3, C2f, [256]]                         # 9 (P3 final)
+
+  # Downsample pathway
+  - [9, 1, Conv, [256, 3, 2]]                  # 10
+  - [[10, 6], 1, Concat, [1]]                  # 11
+  - [11, 3, C2f, [512]]                        # 12 (P4 final)
+
+  - [12, 1, Conv, [512, 3, 2]]                 # 13
+  - [[13, 3], 1, Concat, [1]]                  # 14
+  - [14, 3, C2f, [1024]]                       # 15 (P5 final)
+
+# =========================================================
+# HEAD
+# =========================================================
+
+head:
+  - [[9, 12, 15], 1, Detect, [nc]]
