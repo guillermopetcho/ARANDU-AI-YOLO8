@@ -4,27 +4,7 @@ La hoja de ruta que planteas es correcta, pero hay un punto a ajustar: **no conv
 
 Te propongo una versión profesional de tu plan, alineada con lo que quieres construir.
 
----
 
-# Arquitectura general del sistema (visión correcta)
-
-```text
-Imagen campo
-↓
-[1] Segmentación planta (YOLOv8)
-↓
-[2] Parsing estructural (tallo, hoja, nodo, flor)
-↓
-[3] Análisis por órgano (especializado)
-↓
-[4] Diagnóstico (enfermedades + estado)
-↓
-[5] Sistema de aprendizaje continuo
-```
-
-Esto no es un modelo, es un **sistema cognitivo visual jerárquico**.
-
----
 
 # ETAPA 1 — Segmentación de planta (lo que ya estás haciendo)
 
@@ -227,74 +207,6 @@ Backbone compartido
 
 👉 reduce datos necesarios
 👉 mejora generalización
-
----
-
-# Riesgos en tu plan (y cómo evitarlos)
-
-## 1. Error: entrenar todo junto desde el inicio
-
-✔ Solución:
-
-* entrenar por etapas
-* luego integrar
-
----
-
-## 2. Error: no alinear datasets entre etapas
-
-✔ Solución:
-
-* usar mismas imágenes cuando sea posible
-* mantener IDs consistentes
-
----
-
-## 3. Error: no guardar masks
-
-✔ Solución:
-
-* siempre persistir máscaras
-
----
-
-# Roadmap técnico optimizado
-
-## Fase 1 (ahora)
-
-* YOLOv8 segmentación planta
-* guardar masks
-
-## Fase 2
-
-* segmentación partes (leaf/stem/…)
-
-## Fase 3
-
-* dataset hojas
-* modelo enfermedad
-
-## Fase 4
-
-* multi-rama (textura + global)
-
-## Fase 5
-
-* continual learning
-
----
-
-# Insight clave (nivel experto)
-
-Estás pasando de:
-
-> visión basada en píxeles
-
-a
-
-> **visión estructurada basada en biología**
-
-Eso cambia completamente el nivel del sistema.
 
 
 
