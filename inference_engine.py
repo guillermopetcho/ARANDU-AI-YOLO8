@@ -124,7 +124,7 @@ class AranduInferenceEngine:
             print("[*] Construyendo base de datos KNN desde Train Dataset (puede demorar)...")
             train_dir = self.config['paths']['eval_train_root']
             if not os.path.exists(train_dir):
-                train_dir = "/kaggle/input/datasets/joaquinignaciopetcho/base-soja-encoder-full/BASE-SOJA-ENCODER-FULL/train"
+                train_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
                 
             train_ds = datasets.ImageFolder(train_dir, transform=self.transform)
             loader = DataLoader(train_ds, batch_size=256, shuffle=False, num_workers=4)

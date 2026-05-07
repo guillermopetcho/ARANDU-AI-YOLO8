@@ -30,9 +30,9 @@ moco:
   local_loss_weight: 0.5      # Peso de la pérdida de vistas locales vs. globales
 
 paths:
-  dataset_root: "/kaggle/input/datasets/joaquinignaciopetcho/base-soja-encoder-full/BASE-SOJA-ENCODER-FULL"
-  eval_train_root: "/kaggle/input/datasets/joaquinignaciopetcho/base-soja-encoder-full/BASE-SOJA-ENCODER-FULL/train"
-  eval_val_root: "/kaggle/input/datasets/joaquinignaciopetcho/base-soja-encoder-full/BASE-SOJA-ENCODER-FULL/val"
+  dataset_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640"
+  eval_train_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
+  eval_val_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
   checkpoint_path: "/kaggle/working/moco_checkpoint.pth"
   best_checkpoint_path: "/kaggle/working/moco_best_checkpoint.pth"
   encoder_export_path: "/kaggle/working/moco_encoder_ready.pth"

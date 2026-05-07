@@ -38,7 +38,7 @@ def evaluate():
     val_dir = config['paths']['eval_val_root']
     if not os.path.exists(val_dir):
         # Fallback Kaggle
-        val_dir = "/kaggle/input/datasets/joaquinignaciopetcho/base-soja-encoder-full/BASE-SOJA-ENCODER-FULL/val"
+        val_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
         
     print(f"[*] Cargando dataset desde: {val_dir}")
     val_ds = datasets.ImageFolder(val_dir, transform=get_val_transforms())
