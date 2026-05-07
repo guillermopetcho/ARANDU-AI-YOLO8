@@ -2,124 +2,190 @@ import torch
 import torch.nn as nn
 from models.moco import ModelBase
 
+class SpatialFeatureAdapter(nn.Module):
+    """
+    Capas de traducción de MoCo a YOLO.
+    [AJUSTE 1 y 4]: Implementa conexión residual y Dropout para evitar 
+    sobre-filtrado y prevenir que el adaptador se vuelva un 'parche universal'.
+    """
+    def __init__(self, in_channels, out_channels, use_residual=True, use_context_gate=True):
+        super().__init__()
+        self.use_residual = use_residual
+        self.use_context_gate = use_context_gate
+        
+        # 1. Compresión de canales (Alineación de Distribución)
+        self.compress = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.SiLU(inplace=True)
+        )
+        
+        # 2. Inyección de localidad (Búsqueda de bordes y texturas)
+        self.local_context = nn.Sequential(
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False, groups=out_channels),
+            nn.BatchNorm2d(out_channels),
+            nn.SiLU(inplace=True),
+            # Regularización quirúrgica: Dropout estándar y muy ligero en lugar de Dropout2d 
+            # para no destruir canales enteros con info de micro-lesiones (Ajuste 3)
+            nn.Dropout(p=0.05)
+        )
+        
+        # 3. Shortcut (Preservación de señal cruda para micro-lesiones)
+        if in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+        else:
+            self.shortcut = nn.Identity()
+
+        # [AJUSTE 1 EXPERTO]: Residual dependiente del contenido (Adaptación Contextual)
+        if self.use_context_gate:
+            self.context_gate = nn.Sequential(
+                # Bias en True para poder forzar el 0 inicial
+                nn.Conv2d(out_channels, 1, kernel_size=1, bias=True),
+                nn.Sigmoid()
+            )
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+                
+        # [EVITAR SATURACIÓN DEL GATE]: Inicializamos la convolución del gate a 0.
+        # Esto fuerza que Sigmoid(0) = 0.5 en toda la imagen al inicio.
+        # Evita la saturación prematura y garantiza una exploración equilibrada.
+        if hasattr(self, 'context_gate'):
+            nn.init.constant_(self.context_gate[0].weight, 0)
+            nn.init.constant_(self.context_gate[0].bias, 0)
+
+    def forward(self, x):
+        compressed = self.compress(x)
+        local_feat = self.local_context(compressed)
+        
+        if self.use_residual:
+            # [BALANCE EXPLÍCITO]: Combinación convexa (alpha vs 1-alpha)
+            shortcut_feat = self.shortcut(x)
+            
+            if self.use_context_gate:
+                alpha = self.context_gate(shortcut_feat)
+            else:
+                # Ablation Study: Modelo 2 (Sin Gate). Alpha fijo en 0.5.
+                alpha = 0.5
+                
+            return (alpha * shortcut_feat) + ((1.0 - alpha) * local_feat)
+        return local_feat
+
+
 class AranduBackbone(nn.Module):
     """
-    Backbone Wrapper de ARANDU-AI para la integración con arquitecturas YOLO (YOLOv8/YOLO26n).
-    Extrae representaciones pre-entrenadas mediante MoCo v3 y proporciona
-    los mapas de características (Feature Maps) necesarios para el Neck (PANet/FPN) de YOLO.
+    Backbone Denso de ARANDU-AI para YOLO.
+    Expone P3, P4, P5 con protección estricta de estadísticas BN.
     """
-    def __init__(self, moco_checkpoint_path=None, freeze_phase=1):
+    def __init__(self, moco_checkpoint_path=None, freeze_phase=1, yolo_channels=(256, 512, 1024), use_context_gate=True):
         super().__init__()
         
-        # 1. Instanciar la arquitectura base de MoCo para obtener la ResNet-50
-        print("[*] Inicializando AranduBackbone (ResNet-50 MoCo v3)...")
+        print("[*] Inicializando AranduBackbone Denso (ResNet-50 MoCo v3)...")
         moco_model = ModelBase()
         self.resnet = moco_model.encoder
+        self.phase = freeze_phase
         
-        # 2. Carga inteligente de pesos pre-entrenados
         if moco_checkpoint_path:
             print(f"[*] Cargando pesos desde: {moco_checkpoint_path}")
             state_dict = torch.load(moco_checkpoint_path, map_location='cpu', weights_only=True)
             
-            # Limpiar llaves (quitar prefijos de DDP o MoCo)
             encoder_state_dict = {}
             for k, v in state_dict.items():
                 if k.startswith('module.encoder.'):
                     encoder_state_dict[k.replace('module.encoder.', '')] = v
                 elif k.startswith('encoder.'):
                     encoder_state_dict[k.replace('encoder.', '')] = v
-                # En caso de que se haya guardado solo el dict del encoder o modelo base puro
-                elif not k.startswith('projector.') and not k.startswith('predictor.') and not k.startswith('queue'):
+                elif not any(k.startswith(prefix) for prefix in ['projector.', 'predictor.', 'queue']):
                     encoder_state_dict[k] = v
             
-            # Cargar pesos en el encoder
-            missing, unexpected = self.resnet.load_state_dict(encoder_state_dict, strict=False)
-            if len(missing) > 0:
-                print(f"[!] Faltaron pesos para algunas capas (esperado si eliminamos fc): {missing}")
+            self.resnet.load_state_dict(encoder_state_dict, strict=False)
             
-        # 3. Eliminar capas innecesarias para YOLO (Global Average Pooling y Fully Connected)
-        if hasattr(self.resnet, 'avgpool'):
-            del self.resnet.avgpool
-        if hasattr(self.resnet, 'fc'):
-            del self.resnet.fc
+        if hasattr(self.resnet, 'avgpool'): del self.resnet.avgpool
+        if hasattr(self.resnet, 'fc'): del self.resnet.fc
             
-        # 4. Aplicar la lógica de congelación según la Fase de entrenamiento
+        # Adaptadores Espaciales (P3 es vital para soja, recibe residual)
+        self.adapter_p3 = SpatialFeatureAdapter(512, yolo_channels[0], use_residual=True, use_context_gate=use_context_gate)
+        self.adapter_p4 = SpatialFeatureAdapter(1024, yolo_channels[1], use_residual=True, use_context_gate=use_context_gate)
+        self.adapter_p5 = SpatialFeatureAdapter(2048, yolo_channels[2], use_residual=True, use_context_gate=use_context_gate)
+        
         self.set_training_phase(freeze_phase)
 
+    def train(self, mode=True):
+        """
+        [AJUSTE 2]: Transición inteligente de BatchNorm.
+        Sobrescribe el comportamiento por defecto de PyTorch.
+        """
+        super().train(mode)
+        if mode:
+            if self.phase == 1:
+                # Fase 1: ResNet 100% en eval para proteger medias móviles.
+                self.resnet.eval()
+            elif self.phase == 2:
+                # Fase 2: Mantenemos el core congelado, pero permitimos que los BNs 
+                # de las capas liberadas (layer3 y layer4) pasen a modo train()
+                # Esto alivia la "tensión interna" al permitir adaptación progresiva.
+                self.resnet.eval()
+                self.resnet.layer3.train()
+                self.resnet.layer4.train()
+        return self
+
     def set_training_phase(self, phase):
-        """
-        Configura los gradientes del backbone basándose en la estrategia del informe.
-        - Fase 1: Entrenamiento de Cabecera (Frozen Backbone)
-        - Fase 2: Ajuste Fino Selectivo (Fine-Tuning de layer4/P5)
-        - Fase 3: Unfreeze Global
-        """
+        self.phase = phase
         print(f"[*] Configurando Fase de Entrenamiento: {phase}")
         
-        if phase == 1:
-            # Congelar todo el backbone
-            for param in self.resnet.parameters():
-                param.requires_grad = False
-            print("    -> Fase 1: Backbone completamente congelado.")
+        for param in self.resnet.parameters():
+            param.requires_grad = False
             
+        for adapter in [self.adapter_p3, self.adapter_p4, self.adapter_p5]:
+            for param in adapter.parameters():
+                param.requires_grad = True
+
+        if phase == 1:
+            print("    -> Fase 1: Backbone 100% congelado (incluyendo BN). Entrenando solo Adaptadores, Neck y Head.")
         elif phase == 2:
-            # Congelar todo excepto layer4 (P5)
-            for param in self.resnet.parameters():
-                param.requires_grad = False
+            for param in self.resnet.layer3.parameters():
+                param.requires_grad = True
             for param in self.resnet.layer4.parameters():
                 param.requires_grad = True
-            print("    -> Fase 2: Ajuste Fino Selectivo. Solo 'layer4' (P5) puede actualizarse.")
-            
+            print("    -> Fase 2: Ajuste Fino Selectivo. Liberadas layer3 y layer4 (BNs siguen congelados).")
         elif phase == 3:
-            # Descongelar todo (se recomienda LR bajo = 1e-6)
             for param in self.resnet.parameters():
                 param.requires_grad = True
-            print("    -> Fase 3: Unfreeze Global. Todo el backbone actualizará gradientes.")
-            
+            print("    -> Fase 3: Unfreeze Global. BNs liberados. Todo el sistema actualiza gradientes.")
         else:
-            raise ValueError(f"Fase de entrenamiento no reconocida: {phase}. Usa 1, 2 o 3.")
+            raise ValueError("Fase inválida. Usa 1, 2 o 3.")
+            
+        # Asegurar que el estado train/eval se aplique correctamente al cambiar de fase
+        self.train(self.training)
 
     def forward(self, x):
-        """
-        Extrae y retorna los mapas de características en 3 escalas distintas
-        requeridas por la arquitectura YOLO (P3, P4, P5).
-        """
-        # --- Stem ---
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
         x = self.resnet.relu(x)
         x = self.resnet.maxpool(x)
 
-        # --- Bloques Residuales ---
-        x = self.resnet.layer1(x)  # Stride 4
+        x = self.resnet.layer1(x) 
         
-        # P3 (Small) - Salida de layer2 (Stride 8)
-        # Dimensión típica en ResNet50: [B, 512, H/8, W/8]
-        P3 = self.resnet.layer2(x)
+        p3_raw = self.resnet.layer2(x)
+        p3 = self.adapter_p3(p3_raw)
         
-        # P4 (Medium) - Salida de layer3 (Stride 16)
-        # Dimensión típica en ResNet50: [B, 1024, H/16, W/16]
-        P4 = self.resnet.layer3(P3)
+        p4_raw = self.resnet.layer3(p3_raw)
+        p4 = self.adapter_p4(p4_raw)
         
-        # P5 (Large) - Salida de layer4 (Stride 32)
-        # Dimensión típica en ResNet50: [B, 2048, H/32, W/32]
-        P5 = self.resnet.layer4(P4)
+        p5_raw = self.resnet.layer4(p4_raw)
+        p5 = self.adapter_p5(p5_raw)
 
-        return [P3, P4, P5]
+        return [p3, p4, p5]
 
-
-def inject_arandu_into_yolo(yolo_model, arandu_backbone):
-    """
-    Función de utilidad para inyectar este backbone dentro de un modelo Ultralytics.
-    Esta función reemplaza el extractor de características de YOLO por nuestro ResNet-50.
-    """
-    print("[!] Modificando el modelo YOLO...")
-    # NOTA: La integración exacta depende de la estructura interna del yolo_model (Ultralytics).
-    # En YOLOv8, el backbone abarca las capas 0 a 9 típicamente. 
-    # Sustituir directamente requiere que el modelo soporte un custom backbone o envolver el model.model.
-    # Aquí se muestra un patrón conceptual:
-    
-    # yolo_model.model.model[:10] = arandu_backbone
-    
-    # Una forma más segura en Ultralytics es heredar de su BaseTensorModel o modificar el nn.Sequential interno.
-    print("[*] Revisa el código de integración específico en tu script de entrenamiento YOLO.")
-    return yolo_model

@@ -1,54 +1,47 @@
 # =========================================================
-# ARANDU + YOLOv8 (Backbone SSL MoCo ResNet50)
+# ARANDU + YOLO (Backbone SSL MoCo ResNet50 con Adaptador Espacial)
 # =========================================================
 
 # Parámetros
-nc: 1  # número de clases (ajustar)
-depth_multiple: 1.0
-width_multiple: 1.0
+# ⚠️  AJUSTAR nc según el dataset:
+#     nc: 1  → detección binaria (sano vs. enfermo)
+#     nc: N  → N clases de enfermedades específicas
+nc: 1  # número de clases (ajustar antes de entrenar)
 
 # =========================================================
-# BACKBONE
+# BACKBONE (Interfaz Óptima)
 # =========================================================
-# AranduBackbone devuelve 3 escalas: [P3, P4, P5]
-# Channels originales:
-# P3: 512, P4: 1024, P5: 2048
+# AranduBackbone ahora devuelve 3 escalas [P3, P4, P5]
+# *YA ADAPTADAS* en distribución y canales a lo que espera YOLO.
 
 backbone:
-  # Backbone SSL
-  - [-1, 1, AranduYOLOWrapper, []]   # index 0
-
-  # Adaptadores de canal (OBLIGATORIOS)
-  - [0, 1, Conv, [256, 1, 1]]     # index 1 (P3: 512 → 256)
-  - [0, 1, Conv, [512, 1, 1]]     # index 2 (P4: 1024 → 512)
-  - [0, 1, Conv, [1024, 1, 1]]    # index 3 (P5: 2048 → 1024)
+  # Layer 0: AranduBackbone devuelve una lista [P3, P4, P5].
+  # Ultralytics interpreta la lista como 3 salidas indexadas en 1, 2 y 3.
+  # El neck referencia estas salidas directamente por índice absoluto.
+  - [-1, 1, AranduYOLOWrapper, []]   
 
 # =========================================================
-# NECK (PAN-FPN estilo YOLOv8)
+# NECK & HEAD (Estilo PAN-FPN)
 # =========================================================
+# A partir de aquí, el Neck recibe las activaciones con la localidad
+# y varianza correctas, eliminando la asimetría de entrenamiento.
 
 neck:
-  # Upsample + concat pathway
-  - [3, 1, nn.Upsample, [None, 2, "nearest"]]   # 4
-  - [[4, 2], 1, Concat, [1]]                   # 5
-  - [5, 3, C2f, [512]]                         # 6
-
-  - [6, 1, nn.Upsample, [None, 2, "nearest"]]  # 7
-  - [[7, 1], 1, Concat, [1]]                   # 8
-  - [8, 3, C2f, [256]]                         # 9 (P3 final)
-
-  # Downsample pathway
-  - [9, 1, Conv, [256, 3, 2]]                  # 10
-  - [[10, 6], 1, Concat, [1]]                  # 11
-  - [11, 3, C2f, [512]]                        # 12 (P4 final)
-
-  - [12, 1, Conv, [512, 3, 2]]                 # 13
-  - [[13, 3], 1, Concat, [1]]                  # 14
-  - [14, 3, C2f, [1024]]                       # 15 (P5 final)
-
-# =========================================================
-# HEAD
-# =========================================================
+  - [3, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[4, 2], 1, Concat, [1]]
+  - [5, 3, C2f, [512]]
+  
+  - [6, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[7, 1], 1, Concat, [1]]
+  - [8, 3, C2f, [256]]  # P3 final
+  
+  - [9, 1, Conv, [256, 3, 2]]
+  - [[10, 6], 1, Concat, [1]]
+  - [11, 3, C2f, [512]] # P4 final
+  
+  - [12, 1, Conv, [512, 3, 2]]
+  - [[13, 3], 1, Concat, [1]]
+  - [14, 3, C2f, [1024]] # P5 final
 
 head:
   - [[9, 12, 15], 1, Detect, [nc]]
