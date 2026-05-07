@@ -16,7 +16,7 @@ def corrupt_image(img):
     factor = random.uniform(0.5, 0.7)
     v = np.clip(v * factor, 0, 255).astype(np.uint8)
     hsv[:, :, 2] = v
-    img = cv2.cvtColor(hsv, cv2.HSV_BGR)
+    img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)  # FIX: HSV_BGR era constante incorrecta
     
     # 2. Blur aleatorio (simula fuera de foco por viento o movimiento)
     if random.random() > 0.3:
@@ -86,6 +86,33 @@ def create_corrupted_dataset(source_yaml, output_dir):
     print(f"[+] Nuevo YAML: {new_yaml}")
 
 if __name__ == '__main__':
-    # Uso de ejemplo:
-    # create_corrupted_dataset("dataset_soja.yaml", "dataset_soja_corrupto")
-    pass
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Genera una copia corrupta del dataset de validación para stress-testing "
+                    "de robustez del modelo ante condiciones adversas de campo."
+    )
+    parser.add_argument(
+        "--source-yaml",
+        type=str,
+        required=True,
+        help="Ruta al YAML de dataset YOLO origen (ej: dataset_soja.yaml)."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        required=True,
+        help="Directorio de salida donde se guardará el dataset corrupto."
+    )
+
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.source_yaml):
+        print(f"❌ --source-yaml no encontrado: '{args.source_yaml}'")
+        print("\nEjemplo de uso:")
+        print("  python utils/corrupt_dataset.py \\")
+        print("    --source-yaml dataset_soja.yaml \\")
+        print("    --output-dir dataset_soja_corrupto")
+        raise SystemExit(1)
+
+    create_corrupted_dataset(args.source_yaml, args.output_dir)

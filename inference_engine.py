@@ -24,27 +24,69 @@ class AranduInferenceEngine:
     def __init__(self, config_path="config/moco.yaml", device=None):
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-            
+
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Hardcode classes from training to ensure consistency
-        self.class_names = ['Mosaic', 'Rust', 'Semilooper_Pest_Attack']
-        self.num_classes = len(self.class_names)
-        
+
+        # Las clases se resuelven dinámicamente en _resolve_class_names().
+        # Nunca se usan valores hardcodeados para evitar predicciones silenciosamente erroneas.
+        self.class_names = None
+        self.num_classes = None
+
         self.transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(224),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-        
+
         self.encoder = None
         self.head = None
         self.reference_embeddings = None
         self.reference_labels = None
         self.knn_index = None
-        
+
+        self._resolve_class_names()
         self._load_models()
+
+    def _resolve_class_names(self):
+        """Resuelve los nombres de clase desde fuentes persistentes.
+
+        Estrategia de resolucín en orden de prioridad:
+          1. class_names.json guardado junto al encoder (más rápido, no requiere dataset).
+          2. ImageFolder sobre eval_train_root (requiere acceso al dataset de training).
+          3. Error explícito con instrucciones claras — nunca silencioso.
+        """
+        encoder_path = self.config['paths']['encoder_export_path']
+        class_names_path = encoder_path.replace('.pth', '_class_names.json')
+
+        # --- Prioridad 1: cache JSON ---
+        if os.path.isfile(class_names_path):
+            with open(class_names_path, 'r') as f:
+                self.class_names = json.load(f)
+            print(f"[*] Clases cargadas desde cache: {self.class_names}")
+
+        # --- Prioridad 2: ImageFolder sobre train dir ---
+        elif os.path.isdir(self.config['paths'].get('eval_train_root', '')):
+            train_dir = self.config['paths']['eval_train_root']
+            ds = datasets.ImageFolder(train_dir)
+            self.class_names = ds.classes
+            # Guardar para futuras instancias
+            with open(class_names_path, 'w') as f:
+                json.dump(self.class_names, f, indent=2)
+            print(f"[*] Clases inferidas del dataset y guardadas en cache: {self.class_names}")
+
+        # --- Prioridad 3: Error explícito ---
+        else:
+            raise RuntimeError(
+                f"No se pudieron resolver los nombres de clase.\n"
+                f"  - Cache esperado en: '{class_names_path}'\n"
+                f"  - Dataset de training no encontrado en: '{self.config['paths'].get('eval_train_root', '?')}'\n"
+                f"Solución: Ejecuta train.py para generar el encoder y el cache de clases, "
+                f"o crea manualmente '{class_names_path}' con formato [\"clase1\", \"clase2\", ...]."
+            )
+
+        self.num_classes = len(self.class_names)
+
 
     def _load_models(self):
         encoder_path = self.config['paths']['encoder_export_path']

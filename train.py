@@ -349,6 +349,13 @@ def main():
             torch.save(clean_model_q, CONFIG["paths"]["encoder_export_path"])
             with open(CONFIG["paths"]["metrics_path"], "w") as f:
                 json.dump({"acc": acc, "f1": f1}, f, indent=4)
+
+            # Guardar nombres de clase junto al encoder para que AranduInferenceEngine
+            # pueda resolver las clases sin necesidad de acceso al dataset en producción.
+            class_names_path = CONFIG["paths"]["encoder_export_path"].replace(".pth", "_class_names.json")
+            with open(class_names_path, "w") as f:
+                json.dump(eval_ds.classes, f, indent=2)
+            logger.info(f"📋 Clases guardadas: {eval_ds.classes} → {class_names_path}")
             logger.info("✅ Listo.")
 
 
