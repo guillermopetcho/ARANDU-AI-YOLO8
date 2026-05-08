@@ -12,8 +12,56 @@ from torch.utils.data import DataLoader, Subset
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import ImageFolder
 from torchvision import transforms as T
+from PIL import Image
+import glob
 
 from models.moco import build_index, MoCoDataset, ModelBase, MoCoQueue
+
+class YOLOClassificationDataset(torch.utils.data.Dataset):
+    """
+    Dataset wrapper que permite a las métricas SSL (KNN, Linear Probe) evaluar sobre 
+    un dataset en formato YOLO (carpetas 'images' y 'labels'). Toma la clase del 
+    primer bounding box de cada archivo .txt como etiqueta global de la imagen.
+    """
+    def __init__(self, root, transform=None):
+        self.root = root
+        self.transform = transform
+        self.images_dir = os.path.join(root, "images")
+        self.labels_dir = os.path.join(root, "labels")
+        
+        self.image_files = []
+        for ext in ('*.jpg', '*.jpeg', '*.png'):
+            self.image_files.extend(glob.glob(os.path.join(self.images_dir, ext)))
+            
+        # Dummy classes: asumimos hasta 100 clases posibles en YOLO
+        self.classes = [f"Class_{i}" for i in range(100)]
+        
+    def __len__(self):
+        return len(self.image_files)
+        
+    def __getitem__(self, idx):
+        img_path = self.image_files[idx]
+        img = Image.open(img_path).convert('RGB')
+        if self.transform:
+            img = self.transform(img)
+            
+        label_path = os.path.join(self.labels_dir, os.path.splitext(os.path.basename(img_path))[0] + ".txt")
+        class_id = 0 # Fallback
+        if os.path.exists(label_path):
+            with open(label_path, 'r') as f:
+                line = f.readline().strip()
+                if line:
+                    # El formato YOLO es: <class_id> <x> <y> <w> <h>
+                    class_id = int(line.split()[0])
+                    
+        return img, class_id
+
+def build_eval_dataset(root, transform):
+    """Auto-detecta el formato del dataset (YOLO o ImageFolder) y devuelve el wrapper correcto."""
+    if os.path.isdir(os.path.join(root, "images")) and os.path.isdir(os.path.join(root, "labels")):
+        return YOLOClassificationDataset(root, transform)
+    else:
+        return ImageFolder(root, transform=transform)
 
 
 def resolve_kaggle_paths(paths_config, rank=0):
@@ -100,8 +148,8 @@ def build_dataloaders(CONFIG, is_distributed, rank):
         T.Resize(256), T.CenterCrop(224), T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
-    eval_ds = ImageFolder(CONFIG["paths"]["eval_train_root"], transform=eval_transform)
-    val_ds = ImageFolder(CONFIG["paths"]["eval_val_root"], transform=eval_transform)
+    eval_ds = build_eval_dataset(CONFIG["paths"]["eval_train_root"], transform=eval_transform)
+    val_ds = build_eval_dataset(CONFIG["paths"]["eval_val_root"], transform=eval_transform)
 
     eval_workers = min(2, n_workers)
     # C3 FIX: Usar make_eval_subset_loader() para permitir rerandomización periódica.

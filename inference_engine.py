@@ -17,8 +17,8 @@ except ImportError:
     from sklearn.neighbors import NearestNeighbors
     HAS_FAISS = False
 
-from models.moco import ModelBase
 from evaluation.knn import extract_features_fast
+from engine.setup import build_eval_dataset
 
 class AranduInferenceEngine:
     def __init__(self, config_path="config/moco.yaml", device=None):
@@ -65,10 +65,10 @@ class AranduInferenceEngine:
                 self.class_names = json.load(f)
             print(f"[*] Clases cargadas desde cache: {self.class_names}")
 
-        # --- Prioridad 2: ImageFolder sobre train dir ---
+        # --- Prioridad 2: ImageFolder / YOLO dataset sobre train dir ---
         elif os.path.isdir(self.config['paths'].get('eval_train_root', '')):
             train_dir = self.config['paths']['eval_train_root']
-            ds = datasets.ImageFolder(train_dir)
+            ds = build_eval_dataset(train_dir, transform=None)
             self.class_names = ds.classes
             # Guardar para futuras instancias
             with open(class_names_path, 'w') as f:
@@ -126,7 +126,7 @@ class AranduInferenceEngine:
             if not os.path.exists(train_dir):
                 train_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
                 
-            train_ds = datasets.ImageFolder(train_dir, transform=self.transform)
+            train_ds = build_eval_dataset(train_dir, transform=self.transform)
             loader = DataLoader(train_ds, batch_size=256, shuffle=False, num_workers=4)
             
             feats, labels = extract_features_fast(self.encoder, loader, self.device)

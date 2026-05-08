@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from models.moco import ModelBase
+from engine.setup import build_eval_dataset
 
 def get_val_transforms():
     """Transformaciones estándar para validación."""
@@ -41,7 +42,7 @@ def evaluate():
         val_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
         
     print(f"[*] Cargando dataset desde: {val_dir}")
-    val_ds = datasets.ImageFolder(val_dir, transform=get_val_transforms())
+    val_ds = build_eval_dataset(val_dir, transform=get_val_transforms())
     val_loader = DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
     class_names = val_ds.classes
     num_classes = len(class_names)
