@@ -1,38 +1,41 @@
 training:
-  exploitation_mode: True # Desactiva AAC, fija temp y usa best_ckpt
+  exploitation_mode: False  # Reactivar AAC para que controle con los nuevos límites
   seed: 42
-  epochs: 18 # Entrenar 15 epochs más (si venimos de la 3)
-  warmup_epochs: 0 # Sin warmup para fine-tuning
-  final_lr_ratio: 0.1 # Para que el cosine decay termine en un LR suave y no en cero
+  epochs: 5   # Mini-fase quirúrgica: 3-5 epochs máximo desde epoch 9-11
+  warmup_epochs: 0   # Sin warmup en mini-fase
+  final_lr_ratio: 0.1
   batch_size: 48
   grad_accum_steps: 4
   num_workers: 4
-  lr_base: 0.005 # Bajado de 0.015 para un LR final de ~0.0075
+  lr_base: 0.002  # LR muy conservador para la mini-fase de estabilización
   weight_decay: 0.0001
   use_amp: True
-  save_every: 10
-  early_stopping_patience: 50
+  save_every: 1   # Guardar cada epoch en mini-fase para no perder el mejor
+  early_stopping_patience: 3  # Parar rápido si no mejora
 
 moco:
   dim: 256
-  queue: 16384
+  queue: 8192          # Reducido de 16384: menos repulsión global, mejor vecindad local
   momentum_base: 0.999
-  temp_start: 0.14
-  temp_end: 0.11
+  temp_start: 0.12     # τ inicial conservador, dentro del rango [0.10, 0.15]
+  temp_end: 0.10       # τ mínimo: preservar estructura local
   temp_warmup_steps: 100
   # MoCo v3: Predictor MLP (cabeza de predicción para queries solamente)
   predictor_hidden_dim: 4096
   # Multi-Crop DINO-style: Vistas locales adicionales de alta granularidad
-  num_local_crops: 4          # 0 para desactivar (backward-compatible)
-  local_crop_scale_min: 0.05  # Escala mínima del recorte local (% del área)
-  local_crop_scale_max: 0.40  # Escala máxima del recorte local
-  local_crop_size: 96         # Resolución de vistas locales en píxeles
-  local_loss_weight: 0.5      # Peso de la pérdida de vistas locales vs. globales
+  num_local_crops: 4          # Mantener crops locales, solo bajar su peso
+  local_crop_scale_min: 0.05
+  local_crop_scale_max: 0.40
+  local_crop_size: 96
+  local_loss_weight: 0.25     # Reducido de 0.5: menos dominancia local, más estructura global
 
 paths:
   dataset_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640"
   eval_train_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
   eval_val_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
+  # data_yaml: ruta al YAML del dataset YOLO. Permite que YOLOClassificationDataset
+  # lea los nombres de clase reales (campo 'names') en lugar de generarlos como placeholders.
+  data_yaml: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/data.yaml"
   checkpoint_path: "/kaggle/working/moco_checkpoint.pth"
   best_checkpoint_path: "/kaggle/working/moco_best_checkpoint.pth"
   encoder_export_path: "/kaggle/working/moco_encoder_ready.pth"
@@ -42,18 +45,25 @@ paths:
 eval:
   subset_size: 1000
   knn_k: 20
+  # L5 FIX: linear_probe_epochs no estaba definido en el config, forzando siempre
+  # el fallback hardcodeado de 25 en evaluation/linear_probe.py.
+  # Ahora es configurable sin tocar el código fuente.
+  linear_probe_epochs: 25
+  linear_probe_batch_size: 256  # Tamaño de batch para la sonda lineal post-SSL
 
 wandb:
   enabled: true
   project: "MoCo-ENCODER"
 
 controller:
-  Kp_tau: 0.02
+  Kp_tau: 0.01          # Ganancia reducida: ajustes más conservadores de tau
   Ki_tau_ratio: 50.0
-  Kp_alpha: 0.005
-  Kp_lr: 0.5
-  lr_recovery_rate: 1.025
+  Kp_alpha: 0.002       # Freno de momentum más suave
+  Kp_lr: 0.3
+  lr_recovery_rate: 1.01
   crisis_threshold: 2
-  deadband_u: 0.1
-  deadband_d: 0.1
-  deadband_r: 0.05
+  deadband_u: 0.15      # Zona muerta más amplia: ignorar pequeñas fluctuaciones
+  deadband_d: 0.15
+  deadband_r: 0.08
+  tau_max: 0.15         # CLAVE: el AAC NO puede subir tau por encima de 0.15
+  momentum_max: 0.9995  # CLAVE: el key encoder no puede volverse inmóvil (era 0.99999)

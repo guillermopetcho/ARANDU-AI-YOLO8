@@ -231,9 +231,12 @@ def main():
                 if hasattr(model_to_save, 'projector'):
                     p_stats = get_module_stats(model_to_save.projector)
                     p_stats['epoch'] = epoch + 1
+                    # C2 FIX: f.tell()==0 siempre es False en modo 'a' si el archivo ya existe.
+                    # Verificar existencia y tamaño antes de abrir para decidir si escribir header.
+                    write_proj_header = not os.path.exists(proj_log_file) or os.path.getsize(proj_log_file) == 0
                     with open(proj_log_file, "a", newline="") as f:
                         writer = csv.DictWriter(f, fieldnames=sorted(p_stats.keys()))
-                        if f.tell() == 0:
+                        if write_proj_header:
                             writer.writeheader()
                         writer.writerow(p_stats)
 

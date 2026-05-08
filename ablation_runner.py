@@ -44,6 +44,11 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
             
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
+    # M3 FIX: verificar que el registro fue exitoso antes de intentar cargar el modelo.
+    # Si Ultralytics cambió su mecanismo de resolución de clases, esto falla aquí
+    # con un mensaje claro en lugar de crashear con AttributeError dentro del build.
+    assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperNoGate, \
+        "[M3] Registro de AranduYOLOWrapper (NoGate) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
     model2 = YOLO("arandu_yolov8.yaml")
     model2.train(
@@ -73,6 +78,9 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
             
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapperGate)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapperGate)
+    # M3 FIX: misma verificación para el modelo con Gate.
+    assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperGate, \
+        "[M3] Registro de AranduYOLOWrapper (Gate) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
     model3 = YOLO("arandu_yolov8.yaml")
     model3.train(

@@ -51,6 +51,14 @@ def generate_alpha_heatmaps(image_path, model_path, save_path="alpha_heatmaps.pn
     
     # Preparar imagen base
     img_bgr = cv2.imread(image_path)
+    # M5 FIX: cv2.imread retorna None si el archivo no existe o no se puede leer.
+    # Sin este guard, cv2.cvtColor crashea con un mensaje opaco de OpenCV.
+    if img_bgr is None:
+        extractor.remove_hooks()
+        raise FileNotFoundError(
+            f"No se pudo cargar la imagen: '{image_path}'. "
+            "Verifica que el archivo exista y sea un formato válido (jpg/png)."
+        )
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     
     # [VALIDACIÓN CUANTITATIVA]: Crear máscara de Bounding Boxes

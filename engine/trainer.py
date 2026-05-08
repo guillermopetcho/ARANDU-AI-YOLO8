@@ -140,13 +140,19 @@ class MoCoTrainer:
                 if self.config['training']['use_amp']:
                     self.scaler.unscale_(self.optimizer)
 
-                torch.nn.utils.clip_grad_norm_(self.model_q.parameters(), 1.0)
+                # L2 FIX: Medir grad_norm ANTES de clip_grad_norm_ para capturar
+                # el valor real pre-clip. El código anterior medía post-clip, por lo
+                # que nunca veia valores > 1.0 (siempre estaban cortados).
+                # Se mide en todos los pasos de optimización para no perder spikes
+                # que ocurran entre múltiplos de 50, usando avg del epoch como reporte.
+                gn = sum(
+                    p.grad.data.norm(2).item() ** 2
+                    for p in self.model_q.parameters() if p.grad is not None
+                ) ** 0.5
+                grad_norm_sum += gn
+                grad_steps += 1
 
-                # Medir grad_norm DESPUÉS del unscale (siempre sobre gradientes en escala real)
-                if global_step % 50 == 0:
-                    gn = sum(p.grad.data.norm(2).item()**2 for p in self.model_q.parameters() if p.grad is not None)**0.5
-                    grad_norm_sum += gn
-                    grad_steps += 1
+                torch.nn.utils.clip_grad_norm_(self.model_q.parameters(), 1.0)
 
                 if self.config['training']['use_amp']:
                     self.scaler.step(self.optimizer)
@@ -206,7 +212,11 @@ class MoCoTrainer:
                 load_errors = loader.dataset._load_errors.value
                 loader.dataset._load_errors.value = 0  # Reset atómico para la siguiente época
         
-        error_rate = (load_errors / max(1, len(loader) * self.config['training']['batch_size'])) * 100
+        # M1 FIX: Usar len(loader.dataset) como denominador (total de imágenes reales
+        # del dataset de este rank), en lugar de len(loader)*batch_size que asume
+        # batches completos y es incorrecto para el último batch (sin drop_last en eval).
+        total_samples = max(1, len(loader.dataset))
+        error_rate = (load_errors / total_samples) * 100
         if error_rate > 1.0 and rank == 0:
             logging.getLogger("AranduSSL").warning(f"⚠️ Alta tasa de errores de carga: {error_rate:.2f}% ({load_errors} imágenes).")
 

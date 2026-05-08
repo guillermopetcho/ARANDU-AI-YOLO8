@@ -6,6 +6,7 @@ Extraído de train.py para modularizar la construcción de componentes.
 import os
 import copy
 import logging
+import yaml
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
@@ -22,8 +23,12 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
     Dataset wrapper que permite a las métricas SSL (KNN, Linear Probe) evaluar sobre 
     un dataset en formato YOLO (carpetas 'images' y 'labels'). Toma la clase del 
     primer bounding box de cada archivo .txt como etiqueta global de la imagen.
+
+    Las clases reales se infieren desde el data.yaml del dataset (campo 'names').
+    Si no se puede cargar el YAML, se genera un fallback dinámico basado en los IDs
+    reales encontrados en los archivos de etiquetas.
     """
-    def __init__(self, root, transform=None):
+    def __init__(self, root, transform=None, data_yaml_path=None):
         self.root = root
         self.transform = transform
         self.images_dir = os.path.join(root, "images")
@@ -32,9 +37,63 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
         self.image_files = []
         for ext in ('*.jpg', '*.jpeg', '*.png'):
             self.image_files.extend(glob.glob(os.path.join(self.images_dir, ext)))
+
+        # --- Inferencia de clases reales desde data.yaml ---
+        self.classes = self._load_class_names(data_yaml_path)
+        
+    def _load_class_names(self, data_yaml_path):
+        """Intenta cargar los nombres de clase reales desde el data.yaml del dataset YOLO.
+        
+        Estrategia de búsqueda:
+          1. Path explícito pasado por el caller.
+          2. Autodescubrimiento: busca data.yaml en el directorio padre (../data.yaml).
+          3. Fallback dinámico: escanea los .txt de labels para inferir los IDs presentes.
+        """
+        # L3 FIX: import yaml movido al top del módulo (ya no se importa aquí).
+        # Estrategia 1: path explícito
+        candidates = []
+        if data_yaml_path and os.path.isfile(data_yaml_path):
+            candidates.append(data_yaml_path)
             
-        # Dummy classes: asumimos hasta 100 clases posibles en YOLO
-        self.classes = [f"Class_{i}" for i in range(100)]
+        # Estrategia 2: autodescubrimiento en el directorio padre
+        parent_dir = os.path.dirname(self.root.rstrip('/'))
+        for name in ('data.yaml', 'dataset.yaml'):
+            candidate = os.path.join(parent_dir, name)
+            if os.path.isfile(candidate):
+                candidates.append(candidate)
+                
+        for yaml_path in candidates:
+            try:
+                with open(yaml_path, 'r') as f:
+                    cfg = yaml.safe_load(f)
+                names = cfg.get('names', {})
+                if isinstance(names, dict):
+                    # Formato: {0: 'Clase_A', 1: 'Clase_B', ...}
+                    return [names[i] for i in sorted(names.keys())]
+                elif isinstance(names, list):
+                    # Formato: ['Clase_A', 'Clase_B', ...]
+                    return names
+            except Exception:
+                pass  # Intentar el siguiente candidato
+                
+        # Estrategia 3: fallback dinámico escaneando labels
+        found_ids = set()
+        for lf in glob.glob(os.path.join(self.labels_dir, '*.txt'))[:200]:  # cap para velocidad
+            try:
+                with open(lf) as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if parts:
+                            found_ids.add(int(parts[0]))
+            except Exception:
+                pass
+                
+        if found_ids:
+            max_id = max(found_ids)
+            return [f"Class_{i}" for i in range(max_id + 1)]
+            
+        # Último recurso: lista genérica pequeña (no 100 que da falsos num_classes)
+        return [f"Class_{i}" for i in range(10)]
         
     def __len__(self):
         return len(self.image_files)
@@ -52,14 +111,23 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
                 line = f.readline().strip()
                 if line:
                     # El formato YOLO es: <class_id> <x> <y> <w> <h>
-                    class_id = int(line.split()[0])
+                    raw_id = int(line.split()[0])
+                    # M2 FIX: clampear al rango válido para evitar IndexError en CrossEntropyLoss
+                    # si el dataset tiene IDs que superan el número de clases configuradas.
+                    class_id = min(raw_id, len(self.classes) - 1)
                     
         return img, class_id
 
-def build_eval_dataset(root, transform):
-    """Auto-detecta el formato del dataset (YOLO o ImageFolder) y devuelve el wrapper correcto."""
+def build_eval_dataset(root, transform, data_yaml_path=None):
+    """Auto-detecta el formato del dataset (YOLO o ImageFolder) y devuelve el wrapper correcto.
+    
+    Args:
+        root: Directorio raíz del dataset (split 'train' o 'valid').
+        transform: Transformaciones torchvision a aplicar.
+        data_yaml_path: Ruta opcional al data.yaml de YOLO para obtener nombres de clase reales.
+    """
     if os.path.isdir(os.path.join(root, "images")) and os.path.isdir(os.path.join(root, "labels")):
-        return YOLOClassificationDataset(root, transform)
+        return YOLOClassificationDataset(root, transform, data_yaml_path=data_yaml_path)
     else:
         return ImageFolder(root, transform=transform)
 
@@ -148,8 +216,10 @@ def build_dataloaders(CONFIG, is_distributed, rank):
         T.Resize(256), T.CenterCrop(224), T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
-    eval_ds = build_eval_dataset(CONFIG["paths"]["eval_train_root"], transform=eval_transform)
-    val_ds = build_eval_dataset(CONFIG["paths"]["eval_val_root"], transform=eval_transform)
+    # Pasar el data_yaml para que YOLOClassificationDataset lea las clases reales
+    data_yaml = CONFIG["paths"].get("data_yaml", None)
+    eval_ds = build_eval_dataset(CONFIG["paths"]["eval_train_root"], transform=eval_transform, data_yaml_path=data_yaml)
+    val_ds = build_eval_dataset(CONFIG["paths"]["eval_val_root"], transform=eval_transform, data_yaml_path=data_yaml)
 
     eval_workers = min(2, n_workers)
     # C3 FIX: Usar make_eval_subset_loader() para permitir rerandomización periódica.

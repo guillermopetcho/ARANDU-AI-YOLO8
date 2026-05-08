@@ -68,7 +68,8 @@ class AranduInferenceEngine:
         # --- Prioridad 2: ImageFolder / YOLO dataset sobre train dir ---
         elif os.path.isdir(self.config['paths'].get('eval_train_root', '')):
             train_dir = self.config['paths']['eval_train_root']
-            ds = build_eval_dataset(train_dir, transform=None)
+            data_yaml = self.config['paths'].get('data_yaml', None)
+            ds = build_eval_dataset(train_dir, transform=None, data_yaml_path=data_yaml)
             self.class_names = ds.classes
             # Guardar para futuras instancias
             with open(class_names_path, 'w') as f:
@@ -113,7 +114,15 @@ class AranduInferenceEngine:
         self.head = self.head.to(self.device).eval()
 
     def build_or_load_reference_db(self, force_rebuild=False):
-        cache_path = "/kaggle/working/reference_db.pt" if "kaggle" in self.config['paths']['eval_train_root'] else "reference_db.pt"
+        # C1 FIX: El cache_path incluye un hash del data_yaml para invalidarlo
+        # automáticamente cuando cambian las clases. Sin esto, un cache generado
+        # con clases dummy (Class_0..N) se reusaba silenciosamente aunque el
+        # data_yaml ya estuviera configurado con los nombres reales.
+        import hashlib
+        data_yaml = self.config['paths'].get('data_yaml', '')
+        yaml_hash = hashlib.md5(data_yaml.encode()).hexdigest()[:8]
+        base_cache = "/kaggle/working/reference_db" if "kaggle" in self.config['paths']['eval_train_root'] else "reference_db"
+        cache_path = f"{base_cache}_{yaml_hash}.pt"
         
         if os.path.exists(cache_path) and not force_rebuild:
             print("[*] Cargando base de datos KNN desde caché...")
@@ -125,8 +134,9 @@ class AranduInferenceEngine:
             train_dir = self.config['paths']['eval_train_root']
             if not os.path.exists(train_dir):
                 train_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
-                
-            train_ds = build_eval_dataset(train_dir, transform=self.transform)
+            
+            # C1 FIX: pasar data_yaml_path para que el dataset use las clases reales
+            train_ds = build_eval_dataset(train_dir, transform=self.transform, data_yaml_path=data_yaml or None)
             loader = DataLoader(train_ds, batch_size=256, shuffle=False, num_workers=4)
             
             feats, labels = extract_features_fast(self.encoder, loader, self.device)
@@ -140,7 +150,10 @@ class AranduInferenceEngine:
 
     def _build_knn_index(self):
         # L2 Normalizar embeddings de referencia
-        self.reference_embeddings = self.reference_embeddings.astype(np.float32)
+        # M6 FIX: np.ascontiguousarray solo copia si el dtype o layout es incorrecto.
+        # .astype(np.float32) siempre crea una copia aunque el array ya sea float32,
+        # lo que desperdicia ~50MB en datasets grandes (50k imgs × 256 dims).
+        self.reference_embeddings = np.ascontiguousarray(self.reference_embeddings, dtype=np.float32)
         if HAS_FAISS:
             faiss.normalize_L2(self.reference_embeddings)
             self.knn_index = faiss.IndexFlatIP(self.reference_embeddings.shape[1])

@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import shutil
+import yaml
 from pathlib import Path
 import random
 
@@ -34,7 +35,6 @@ def create_corrupted_dataset(source_yaml, output_dir):
     """
     Lee un dataset de YOLO y crea una copia corrupta de validación/test.
     """
-    import yaml
     with open(source_yaml, 'r') as f:
         data = yaml.safe_load(f)
         
@@ -74,13 +74,25 @@ def create_corrupted_dataset(source_yaml, output_dir):
         if (i+1) % 100 == 0:
             print(f"    Progreso: {i+1}/{len(img_files)}")
             
-    # Crear nuevo YAML
+    # L4 FIX: Generar YAML con todos los paths absolutos para evitar que Ultralytics
+    # falle al resolver 'train' con ruta relativa mientras 'val' es absoluto.
+    # Se crea un diccionario nuevo (no se muta 'data') para garantizar limpieza.
     new_yaml = Path(output_dir) / "corrupted_dataset.yaml"
-    data['val'] = str(dest_dir.absolute())
-    data['path'] = str(Path(output_dir).absolute())
     
+    # Resolver 'train' del yaml fuente (puede ser relativo al yaml fuente)
+    source_train = data.get('train', '')
+    if source_train and not Path(source_train).is_absolute():
+        source_train = str((Path(source_yaml).parent / source_train).resolve())
+    
+    new_data = {
+        'path': str(Path(output_dir).resolve()),
+        'train': source_train,            # Ruta absoluta del train original (no corrompemos train)
+        'val': str(dest_dir.resolve()),   # Ruta absoluta del val corrompido
+        'nc': data.get('nc', 1),
+        'names': data.get('names', {}),
+    }
     with open(new_yaml, 'w') as f:
-        yaml.dump(data, f)
+        yaml.dump(new_data, f, default_flow_style=False, allow_unicode=True)
         
     print(f"[+] Dataset corrupto generado en {output_dir}")
     print(f"[+] Nuevo YAML: {new_yaml}")

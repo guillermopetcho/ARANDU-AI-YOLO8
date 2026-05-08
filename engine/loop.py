@@ -38,8 +38,16 @@ def handle_evaluation(
     curr_acc = fast_knn(X_t, y_t, X_v, y_v, k=CONFIG["eval"]["knn_k"])
     logger.info(f"KNN ACC: {curr_acc:.4f}")
 
+    # C3 FIX: svdvals requiere al menos 2 muestras. Si el val_loader es muy pequeño
+    # (error de configuración), usar métricas neutras en lugar de crashear.
     SVD_MAX_SAMPLES = 2000
     X_v_t = torch.tensor(X_v)
+    if len(X_v_t) < 2:
+        logger.warning(f"⚠️ eval_val_loader tiene solo {len(X_v_t)} muestras — SVD omitido.")
+        metrics['mu'] = torch.zeros(X_v_t.shape[1] if len(X_v_t) > 0 else 256)
+        metrics['eff_rank'] = 1.0
+        return controller.step_epoch(epoch, curr_acc, metrics), curr_acc
+
     if len(X_v_t) > SVD_MAX_SAMPLES:
         perm = torch.randperm(len(X_v_t))[:SVD_MAX_SAMPLES]
         X_svd = X_v_t[perm]
@@ -65,7 +73,12 @@ def handle_rollback(
     optimizer, scaler, queue, is_compiled, is_distributed,
     warmup_steps, total_steps, final_lr_ratio, build_scheduler, trainer, controller, logger
 ):
-    """Ejecuta la lógica de rollback a un checkpoint previo."""
+    """Ejecuta la lógica de rollback a un checkpoint previo.
+    
+    INVARIANTE CLAVE: retorna el mismo global_step recibido (nunca retrocede).
+    El step del checkpoint se usa internamente solo para el fast-forward del scheduler,
+    pero el step de wandb sigue siendo monótono.
+    """
     if rank == 0: logger.info("🔄 Iniciando proceso de Rollback...")
     if rank == 0 and use_wandb:
         try:
@@ -79,9 +92,11 @@ def handle_rollback(
         rollback_ckpt_path = CONFIG["paths"].get("checkpoint_path", "")
     if not rollback_ckpt_path or not os.path.exists(rollback_ckpt_path):
         if rank == 0: logger.warning("⚠️ Rollback solicitado pero no hay checkpoint. Continuando.")
-        return global_step
+        return global_step  # Sin cambios
 
-    global_step = load_weights_for_rollback(
+    # ckpt_step se usa SOLO para el fast-forward del scheduler.
+    # NO se retorna al caller para no romper la monotonícidad de wandb.
+    ckpt_step = load_weights_for_rollback(
         path=rollback_ckpt_path,
         model_q=model_q, model_k=model_k,
         optimizer=optimizer, scaler=scaler, queue=queue,
@@ -96,10 +111,10 @@ def handle_rollback(
     scheduler = build_scheduler(optimizer, warmup_steps, total_steps, final_lr_ratio=final_lr_ratio)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        for _ in range(global_step):
+        for _ in range(ckpt_step):  # Fast-forward al paso del checkpoint
             scheduler.step()
 
     trainer.scheduler = scheduler
     controller.warmup_aborted = True
     if rank == 0: logger.info("✅ Rollback completado. Iniciando fase de Decaimiento Cosenoidal.")
-    return global_step
+    return global_step  # Retornar el step actual (monótono), NO el del checkpoint

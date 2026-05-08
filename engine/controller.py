@@ -320,8 +320,10 @@ class TrainingController:
                     
                     # --- Eje B: Freno de Inercia (Control P sobre Alpha) ---
                     Kp_alpha = self.config.get('controller', {}).get('Kp_alpha', 0.005)
+                    momentum_max = self.config.get('controller', {}).get('momentum_max', 1.0 - 1e-5)
+                    alpha_min = 1.0 - momentum_max  # momentum_max=0.9995 => alpha_min=5e-4
                     self.alpha -= Kp_alpha * eD_ctrl
-                    self.alpha = max(min(self.alpha, 0.05), 1e-5) # Momentum [0.95, 0.99999]
+                    self.alpha = max(min(self.alpha, 0.05), alpha_min)  # Momentum [momentum_max, 0.95]
                     self.current_m = 1.0 - self.alpha
                     
                     # --- Eje C: Amortiguador de LR Reversible ---
@@ -390,7 +392,10 @@ class TrainingController:
                         tau_boost = 0.02 * min(2.0, delta_rank_abs)
                         self.logger.warning(f"🚨 SEGUNDA OLA DE CRISIS DETECTADA. Control estructural (Tau +{tau_boost:.4f}).")
                         self.tau += tau_boost
-                        self.tau = max(min(self.tau, 0.25), 0.05)
+                        # Respetar tau_max del config (mini-fase quirúrgica puede ser 0.15)
+                        tau_max = self.config.get('controller', {}).get('tau_max', 0.25)
+                        momentum_max = self.config.get('controller', {}).get('momentum_max', 1.0 - 1e-5)
+                        self.tau = max(min(self.tau, tau_max), 0.05)
                         # No asfixiamos más al optimizador, el problema es estructural
                         self.lr_scale = max(self.lr_scale, 0.4)
                         use_pid_tau = False
@@ -404,14 +409,15 @@ class TrainingController:
                         self.alpha = min(self.alpha + 1e-4, 0.01)
                         
                     if use_pid_tau:
+                        tau_max = self.config.get('controller', {}).get('tau_max', 0.25)
                         self.tau += Kp_tau * eU_ctrl + Ki_tau * self.I_U
                         # Anclaje suave de PID también para evitar drift
                         tau_target = 0.10
                         self.tau += 0.01 * (tau_target - self.tau)
                         # Anti-Windup Dinámico
-                        if self.tau >= 0.25 or self.tau <= 0.05:
+                        if self.tau >= tau_max or self.tau <= 0.05:
                             self.I_U *= 0.9 # Leak cuando está saturado
-                        self.tau = max(min(self.tau, 0.25), 0.05)
+                        self.tau = max(min(self.tau, tau_max), 0.05)
                         
                     # CONTROL CONTINUO: PID latente estándar sobre el rank de varianza.
                     if is_healthy_reorg:
@@ -663,7 +669,10 @@ class TrainingController:
 
         # Cold-start penalty: atenúa señales de error post-resume para evitar
         # que el controlador tome decisiones agresivas con estado EMA desactualizado.
-        warmup_factor = min(1.0, self.steps / 100.0) if self.steps > 0 else 1.0
+        # M4 FIX: Cuando steps==0 (checkpoint de epoch 0), warmup_factor debe ser 0.0
+        # para indicar que no hay historial. El valor anterior era 1.0, lo cual
+        # aplicaba confianza total a EMAs que podrían estar desactualizados.
+        warmup_factor = min(1.0, self.steps / 100.0)  # steps=0 → 0.0, steps=100 → 1.0
         self.eU_ema *= warmup_factor
         self.eD_ema *= warmup_factor
         self.eR_ema *= warmup_factor

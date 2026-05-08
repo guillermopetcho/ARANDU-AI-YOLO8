@@ -42,10 +42,14 @@ def evaluate():
         val_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
         
     print(f"[*] Cargando dataset desde: {val_dir}")
-    val_ds = build_eval_dataset(val_dir, transform=get_val_transforms())
+    # Pasar el data_yaml para obtener nombres de clase reales (no dummies)
+    data_yaml_path = config['paths'].get('data_yaml', None)
+    val_ds = build_eval_dataset(val_dir, transform=get_val_transforms(), data_yaml_path=data_yaml_path)
     val_loader = DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
     class_names = val_ds.classes
     num_classes = len(class_names)
+    if any(c.startswith('Class_') for c in class_names):
+        print(f"[!] ADVERTENCIA: Se usaron clases genéricas (Class_N). Verifica 'paths.data_yaml' en moco.yaml.")
     print(f"[*] Clases detectadas ({num_classes}): {class_names}")
 
     # 3. Reconstruir el Modelo
