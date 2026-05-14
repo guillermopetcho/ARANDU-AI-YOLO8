@@ -37,9 +37,13 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
         nn.LayerNorm(proj_dim),
         nn.Linear(proj_dim, num_classes)
     ).to(device)
+    decay_params = [p for n, p in classifier.named_parameters() 
+                    if p.requires_grad and p.ndim > 1 and not n.endswith('.bias')]
+    no_decay_params = [p for n, p in classifier.named_parameters() 
+                       if p.requires_grad and (p.ndim <= 1 or n.endswith('.bias'))]
     param_groups = [
-        {'params': [p], 'weight_decay': 0.0 if p.ndim <= 1 or n.endswith(".bias") else 1e-4}
-        for n, p in classifier.named_parameters() if p.requires_grad
+        {'params': decay_params,    'weight_decay': 1e-4},
+        {'params': no_decay_params, 'weight_decay': 0.0},
     ]
 
     optimizer = torch.optim.AdamW(param_groups, lr=1e-3)

@@ -13,6 +13,7 @@ import numpy as np
 from pathlib import Path
 import logging
 import threading
+import time
 
 from utils.distributed import concat_all_gather
 
@@ -200,10 +201,9 @@ def build_index(root, rank, cache_path):
             # L1 FIX: Loguear antes del rglob para que en NFS/Kaggle (donde puede
             # tardar 10-30s) el proceso no parezca colgado sin ninguna salida.
             _logger.info(f"📂 Escaneando imágenes en {root} (puede tardar en NFS)...")
-            import time as _time
-            _t0 = _time.monotonic()
+            _t0 = time.monotonic()
             files = sorted([str(f) for ext in ["*.jpg", "*.png", "*.jpeg", "*.JPG", "*.PNG", "*.JPEG"] for f in Path(root).rglob(ext)])
-            _elapsed = _time.monotonic() - _t0
+            _elapsed = time.monotonic() - _t0
             if len(files) == 0:
                 raise RuntimeError(f"No se encontraron imágenes en {root}")
             np.save(cache_path, files)
@@ -299,4 +299,7 @@ class MoCoQueue(nn.Module):
         self.queue_ptr[0] = (ptr + batch_size) % self.K
         
         if step is not None and step % 500 == 0:
-            self.queue.copy_(F.normalize(self.queue, dim=0))
+            with torch.no_grad():
+                self.queue.copy_(F.normalize(self.queue, dim=0))
+                if dist.is_available() and dist.is_initialized():
+                    dist.broadcast(self.queue, src=0)

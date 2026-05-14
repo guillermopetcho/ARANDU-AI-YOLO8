@@ -59,7 +59,9 @@ class MoCoTrainer:
             v_q = v_q.to(self.device, non_blocking=True, memory_format=torch.channels_last)
             v_k = v_k.to(self.device, non_blocking=True, memory_format=torch.channels_last)
 
-            is_accumulating = (step + 1) % self.config['training']['grad_accum_steps'] != 0 and (step + 1) != len(loader)
+            is_last_batch = (step + 1) == len(loader)
+            is_accum_step = (step + 1) % self.config['training']['grad_accum_steps'] == 0
+            is_accumulating = not (is_accum_step or is_last_batch)
             sync_context = self.model_q.no_sync() if (self.is_distributed and is_accumulating) else contextlib.nullcontext()
 
             with sync_context:
@@ -132,7 +134,8 @@ class MoCoTrainer:
                     self.optimizer.zero_grad(set_to_none=True)  # Limpiar grads contaminados
                     continue
 
-                self.scaler.scale(loss / self.config['training']['grad_accum_steps']).backward()
+                accum_count = (step % self.config['training']['grad_accum_steps']) + 1 if is_last_batch and not is_accum_step else self.config['training']['grad_accum_steps']
+                self.scaler.scale(loss / accum_count).backward()
 
             # === Paso de Optimización ===
             if not is_accumulating:
@@ -231,6 +234,13 @@ class MoCoTrainer:
             'neg_sim': neg_sim_sum / num_steps,
             'std': std_sum / num_steps,
             'gn': grad_norm_sum / grad_steps if grad_steps > 0 else None,
-            'tput': (len(loader) * self.config['training']['batch_size'] * (dist.get_world_size() if dist.is_initialized() else 1)) / max(1, time.time() - epoch_start),
+            # N1 FIX: el numerador correcto es imágenes REALMENTE procesadas por todos los ranks.
+            # - valid_steps: batches procesados exitosamente en ESTE rank (ya sumado entre ranks en DDP)
+            # - batch_size: imágenes por batch por rank
+            # - El denominador `epoch_start` mide el tiempo real del epoch completo
+            # Bug anterior: len(loader)*batch_size*world_size doblaba el conteo en DDP porque
+            # len(loader) en un DistributedSampler ya es N_total/world_size, y multiplicar
+            # luego por world_size da N_total correctamente, pero ignoraba batches NaN saltados.
+            'tput': (num_steps * self.config['training']['batch_size']) / max(1e-6, time.time() - epoch_start),
             'data_err': error_rate
         }, global_step

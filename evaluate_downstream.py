@@ -38,9 +38,15 @@ def evaluate():
     # 2. Cargar Dataset de Validación
     val_dir = config['paths']['eval_val_root']
     if not os.path.exists(val_dir):
-        # Fallback Kaggle
-        val_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
-        
+        print(f"[!] ADVERTENCIA: val_dir no encontrado en '{val_dir}'.")
+        kaggle_fallback = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
+        if os.path.exists(kaggle_fallback):
+            val_dir = kaggle_fallback
+            print(f"[*] Usando fallback Kaggle: {val_dir}")
+        else:
+            print(f"❌ Error: No se encontró un directorio de validación válido.")
+            print(f"   Verifica 'paths.eval_val_root' en tu config/moco.yaml.")
+            sys.exit(1)
     print(f"[*] Cargando dataset desde: {val_dir}")
     # Pasar el data_yaml para obtener nombres de clase reales (no dummies)
     data_yaml_path = config['paths'].get('data_yaml', None)

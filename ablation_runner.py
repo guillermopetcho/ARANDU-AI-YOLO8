@@ -51,12 +51,16 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
         "[M3] Registro de AranduYOLOWrapper (NoGate) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
     model2 = YOLO("arandu_yolov8.yaml")
+    # Congelamos explícitamente el backbone y adapter (Fase 1)
+    for name, param in model2.model.named_parameters():
+        if 'backbone' in name or 'adapter' in name:
+            param.requires_grad = False
+
     model2.train(
         data=data_yaml, 
         epochs=epochs, 
         imgsz=imgsz, 
         batch=batch,
-        freeze=10, # Fase 1: Congela el backbone 10 epochs
         project="Ablation_SojAI", 
         name="Model2_NoGate", 
         seed=42
@@ -83,12 +87,16 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
         "[M3] Registro de AranduYOLOWrapper (Gate) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
     model3 = YOLO("arandu_yolov8.yaml")
+    # Congelamos explícitamente el backbone y adapter (Fase 1)
+    for name, param in model3.model.named_parameters():
+        if 'backbone' in name or 'adapter' in name:
+            param.requires_grad = False
+
     model3.train(
         data=data_yaml, 
         epochs=epochs, 
         imgsz=imgsz, 
         batch=batch,
-        freeze=10, 
         project="Ablation_SojAI", 
         name="Model3_ContextGate", 
         seed=42

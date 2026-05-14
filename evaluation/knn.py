@@ -160,8 +160,27 @@ def fast_knn(X_train: np.ndarray, y_train: np.ndarray,
 
     # Voting vectorizado: O(k) operaciones numpy sin loop Python explícito.
     # indices: [N_val, k] → neighbor_labels[i, j] = clase del j-ésimo vecino de i
-    num_classes = int(y_train.max()) + 1
+    #
+    # N2 FIX: Usar max(y_train.max(), y_val.max()) + 1 como num_classes real.
+    # El bug anterior usaba solo y_train.max() + 1, que falla silenciosamente cuando
+    # el subset de evaluación (eval_train_subset de 1000 muestras) no incluye alguna clase
+    # presente en y_val (dataset desbalanceado). En ese caso el voting array tiene menos
+    # columnas que clases reales, y los votos para la clase ausente se asignan a otra clase,
+    # inflando la accuracy artificialmente sin ningún error visible.
+    num_classes = int(max(y_train.max(), y_val.max())) + 1
     neighbor_labels = y_train[indices]  # [N_val, k]
+
+    # Guard explícito: detectar etiquetas fuera de rango antes de que contaminen los resultados.
+    # neighbor_labels solo puede contener IDs de y_train, que están acotados por num_classes.
+    # Este assert nunca debería dispararse, pero actúa como canario de inconsistencia de dataset.
+    if neighbor_labels.max() >= num_classes:
+        _logger.error(
+            f"[KNN] Etiqueta de vecino fuera de rango: max={neighbor_labels.max()}, "
+            f"num_classes={num_classes}. Posible corrupción del dataset o mismatch de labels."
+        )
+        # Clampear para no crashear, pero la métrica puede ser incorrecta
+        neighbor_labels = np.clip(neighbor_labels, 0, num_classes - 1)
+
     votes = np.zeros((len(X_val_norm), num_classes), dtype=np.int32)
     np.add.at(votes, (np.arange(len(X_val_norm))[:, None], neighbor_labels), 1)
 
