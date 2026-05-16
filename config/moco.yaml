@@ -4,29 +4,35 @@ training:
   epochs: 5   # Mini-fase quirúrgica: 3-5 epochs máximo desde epoch 9-11
   warmup_epochs: 0   # Sin warmup en mini-fase
   final_lr_ratio: 0.1
-  batch_size: 48
+  batch_size: 32
   grad_accum_steps: 4
-  num_workers: 4
+  num_workers: 8
   lr_base: 0.002  # LR muy conservador para la mini-fase de estabilización
   weight_decay: 0.0001
   use_amp: True
   save_every: 1   # Guardar cada epoch en mini-fase para no perder el mejor
   early_stopping_patience: 3  # Parar rápido si no mejora
+  # B-COMPILE FIX: desactivado por defecto para el smoke test.
+  # Activar SOLO en el segundo run, después de validar estabilidad.
+  use_compile: false
 
 moco:
-  dim: 256
-  queue: 8192          # Reducido de 16384: menos repulsión global, mejor vecindad local
+  dim: 512
+  queue: 16384         # Cola recomendada para estabilidad de representación global
   momentum_base: 0.999
   temp_start: 0.12     # τ inicial conservador, dentro del rango [0.10, 0.15]
   temp_end: 0.10       # τ mínimo: preservar estructura local
   temp_warmup_steps: 100
   # MoCo v3: Predictor MLP (cabeza de predicción para queries solamente)
-  predictor_hidden_dim: 4096
+  predictor_hidden_dim: 1024  # 512→1024→512 (diseño original). 4096 cuadriplicaba VRAM innecesariamente.
   # Multi-Crop DINO-style: Vistas locales adicionales de alta granularidad
-  num_local_crops: 4          # Mantener crops locales, solo bajar su peso
-  local_crop_scale_min: 0.05
-  local_crop_scale_max: 0.40
-  local_crop_size: 96
+  # NOTA: Los siguientes parámetros son INFORMATIVOS (documentación de la arquitectura).
+  # La implementación actual los hardcodea en models/moco.py::get_local_transforms().
+  # Se mantienen aquí para referencia y futura refactorización a config-driven.
+  num_local_crops: 4          # 4×96px + 2×64px (hardcodeado)
+  local_crop_scale_min: 0.02  # escala mínima 64px (hardcodeado)
+  local_crop_scale_max: 0.25  # escala máxima 96px (hardcodeado)
+  local_crop_size: 96         # tamaño vista local mayor (hardcodeado)
   local_loss_weight: 0.25     # Reducido de 0.5: menos dominancia local, más estructura global
 
 paths:

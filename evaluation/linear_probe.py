@@ -12,12 +12,11 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     """Entrena una sonda lineal sobre las representaciones del projector.
 
     NOTA DE DISEÑO: Esta función espera un `encoder` de tipo `ModelBase` (o compatible)
-    que acepte `forward(x, use_predictor=False)` y retorne un vector de 256-dim.
-    Esto mantiene COHERENCIA con el evaluador KNN, que también evalúa sobre 256-dim.
-    Si se quisiera una Linear Probe sobre el backbone puro (transfer learning clásico,
-    2048-dim), se debe pasar `models.resnet50` con `fc=Identity()` como `encoder`
-    y ajustar `proj_dim=2048` en el clasificador de abajo.
+    que acepte `forward(x, use_predictor=False)` y retorne el embedding del projector
+    (512-dim por defecto, configurable via `moco.dim` en el YAML).
+    La dimensión se infiere dinámicamente — no hace falta hardcodear.
     """
+
     logger = logging.getLogger("LinearProbe")
     logger.info("Iniciando Linear Probe...")
 
@@ -49,7 +48,10 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     optimizer = torch.optim.AdamW(param_groups, lr=1e-3)
     epochs = config.get('eval', {}).get('linear_probe_epochs', 25)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # B-LBL FIX: label_smoothing reducido de 0.1 a 0.05.
+    # Con solo 5 clases, 0.1 suavizaba demasiado el target (0.9 correcto, 0.025 incorrecto)
+    # y podía reducir la capacidad discriminativa en clases bien separadas por el SSL.
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     n_workers = config['training']['num_workers']
     # B11 FIX: persistent_workers solo es válido cuando num_workers > 0

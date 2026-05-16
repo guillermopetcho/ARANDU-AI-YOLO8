@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.amp import autocast
 import torch.distributed as dist
 import contextlib
+from collections import defaultdict
 from tqdm.auto import tqdm
 
 from utils.distributed import batch_shuffle_ddp, batch_unshuffle_ddp
@@ -33,10 +34,12 @@ class MoCoTrainer:
         self.model_q.train()
         epoch_loss, pos_sum, neg_sum, align_sum, unif_sum, std_sum = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps = 0.0, 0.0, 0.0, 0
+        norm_sum, queue_std_sum = 0.0, 0.0
         valid_steps = 0
         # T1 FIX: Inicializar aliases antes del loop para evitar UnboundLocalError
         # si el primer batch produce NaN y el loop hace 'continue' sin asignarlos.
         q = k = l_pos = l_neg = None
+        current_norm = 0.0  # B-NORM FIX: inicializar antes del loop para evitar UnboundLocalError en batch NaN
 
         pbar = tqdm(loader) if rank == 0 else loader
         epoch_start = time.time()
@@ -45,8 +48,9 @@ class MoCoTrainer:
             # F6 FIX: local_crops es [B, N, C, H, W] (5D).
             # channels_last solo aplica a tensores 4D — se aplica por slice dentro del loop.
             v_q, v_k, local_crops = batch
-            if local_crops.shape[1] > 0:
-                local_crops = local_crops.to(self.device, non_blocking=True)  # mover sin format
+            # local_crops es ahora una lista de tensores [ [B, C, H_i, W_i], ... ]
+            if len(local_crops) > 0:
+                local_crops = [crop.to(self.device, non_blocking=True) for crop in local_crops]
             else:
                 local_crops = None  # Placeholder vacío → desactivar multi-crop
 
@@ -67,7 +71,7 @@ class MoCoTrainer:
             with sync_context:
                 with autocast(self.device_type, enabled=self.config['training']['use_amp']):
                     # === Vista Global 1: query usa predictor (MoCo v3) ===
-                    q1 = self.model_q(v_q, use_predictor=True)
+                    q1, q1_norm = self.model_q(v_q, use_predictor=True, return_norm=True)
                     with torch.no_grad():
                         if self.is_distributed:
                             v_k_sh, idx1 = batch_shuffle_ddp(v_k)
@@ -101,28 +105,37 @@ class MoCoTrainer:
                     # T5 FIX: Vectorización completa para maximizar Throughput.
                     # Pasamos de O(N) llamadas secuenciales a O(1) llamada masiva.
                     loss_local = 0.0
-                    if local_crops is not None:
-                        B, N, C, H, W = local_crops.shape
-                        # [B, N, C, H, W] -> [B*N, C, H, W]
-                        v_local = local_crops.view(-1, C, H, W).contiguous().to(
-                            memory_format=torch.channels_last)
-                        
-                        q_local = self.model_q(v_local, use_predictor=True)
-                        
-                        # Expandir k1 y labels para alinearse con el batch extendido [B*N]
-                        k1_exp = k1.repeat_interleave(N, dim=0)
-                        labels_local = labels.repeat_interleave(N, dim=0)
-                        
-                        l_pos_l = torch.einsum('nc,nc->n', [q_local, k1_exp]).unsqueeze(-1)
-                        l_neg_l = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
-                        logits_l = torch.cat([l_pos_l, l_neg_l], dim=1) / temp
-                        
-                        loss_local = F.cross_entropy(logits_l, labels_local)
+                    if local_crops is not None and len(local_crops) > 0:
+                        # Agrupar crops por resolución para maximizar throughput en GPU
+                        shape_groups = defaultdict(list)  # import movido al top del módulo
+                        for crop in local_crops:
+                            shape_groups[crop.shape[-1]].append(crop)
+                            
+                        for size, crops in shape_groups.items():
+                            N_crops = len(crops)
+                            # Concatenar todos los crops de esta resolución: [B*N_crops, C, H, W]
+                            v_local = torch.cat(crops, dim=0).contiguous().to(memory_format=torch.channels_last)
+                            q_local = self.model_q(v_local, use_predictor=True)
+                            
+                            # Expandir k1 y labels de [B, ...] a [B*N_crops, ...]
+                            # torch.cat concatena secuencialmente, por lo que k1.repeat es el match correcto
+                            k1_exp = k1.repeat(N_crops, 1)
+                            labels_local = labels.repeat(N_crops)
+                            
+                            l_pos_l = torch.einsum('nc,nc->n', [q_local, k1_exp]).unsqueeze(-1)
+                            l_neg_l = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
+                            logits_l = torch.cat([l_pos_l, l_neg_l], dim=1) / temp
+                            
+                            # Acumular el loss multiplicando por N_crops para mantener escala
+                            loss_local += F.cross_entropy(logits_l, labels_local) * N_crops
+                            
+                        loss_local = loss_local / len(local_crops)
 
                     loss = loss_global + self.local_loss_weight * loss_local
 
                     # Aliases para métricas
                     q, k, l_pos, l_neg = q1, k1, l_pos1, l_neg1
+                    current_norm = q1_norm.item()
 
                 # C3 FIX: usar .item() para evitar ambigüedad de torch.Tensor en contexto bool
                 is_finite_val = loss.isfinite().item()
@@ -187,6 +200,8 @@ class MoCoTrainer:
                     pos_sim_sum += metrics_step['pos_sim']
                     neg_sim_sum += metrics_step['neg_sim']
                     std_sum += metrics_step['std']
+                    norm_sum += current_norm
+                    queue_std_sum += self.queue.queue.std().item()
                     self.last_unif = metrics_step['uniformity']
 
         # L1 FIX: Usar valid_steps (batches realmente procesados) en vez de len(loader)
@@ -196,12 +211,14 @@ class MoCoTrainer:
         if self.is_distributed:
             metrics_tensor = torch.tensor([
                 epoch_loss, pos_sum, neg_sum, align_sum, unif_sum, std_sum,
-                pos_sim_sum, neg_sim_sum, grad_norm_sum, float(grad_steps), float(valid_steps)
+                pos_sim_sum, neg_sim_sum, grad_norm_sum, float(grad_steps), float(valid_steps),
+                norm_sum, queue_std_sum
             ], device=self.device, dtype=torch.float32)
             dist.all_reduce(metrics_tensor, op=dist.ReduceOp.SUM)
             
             epoch_loss, pos_sum, neg_sum, align_sum, unif_sum, std_sum, \
-                pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps, valid_steps = metrics_tensor.tolist()
+                pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps, valid_steps, \
+                norm_sum, queue_std_sum = metrics_tensor.tolist()
             grad_steps = int(grad_steps)
             # Usar la suma total de pasos en todos los procesos como denominador
             num_steps = max(1, int(valid_steps))
@@ -233,6 +250,8 @@ class MoCoTrainer:
             'pos_sim': pos_sim_sum / num_steps,
             'neg_sim': neg_sim_sum / num_steps,
             'std': std_sum / num_steps,
+            'norm': norm_sum / num_steps,
+            'queue_std': queue_std_sum / num_steps,
             'gn': grad_norm_sum / grad_steps if grad_steps > 0 else None,
             # N1 FIX: el numerador correcto es imágenes REALMENTE procesadas por todos los ranks.
             # - valid_steps: batches procesados exitosamente en ESTE rank (ya sumado entre ranks en DDP)

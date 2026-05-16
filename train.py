@@ -109,7 +109,22 @@ def main():
     train_loader, eval_train_loader, eval_val_loader, eval_ds, val_ds = build_dataloaders(CONFIG, is_distributed, rank)
     model_q, model_k, queue, is_compiled = build_model(CONFIG, is_distributed, device, rank, local_rank)
 
-    optimizer = torch.optim.SGD(model_q.parameters(), lr=lr, momentum=0.9, weight_decay=float(CONFIG["training"]["weight_decay"]))
+    # C4 FIX: AdamW fused ahorra VRAM y acelera el optimizer step (ideal para T4 y ConvNeXt)
+    try:
+        optimizer = torch.optim.AdamW(
+            model_q.parameters(), 
+            lr=lr, 
+            weight_decay=float(CONFIG["training"]["weight_decay"]), 
+            fused=True
+        )
+        if rank == 0: logger.info("✅ Fused AdamW activado.")
+    except Exception as e:
+        if rank == 0: logger.warning(f"⚠️ Fused AdamW no soportado ({e}), usando fallback estándar.")
+        optimizer = torch.optim.AdamW(
+            model_q.parameters(), 
+            lr=lr, 
+            weight_decay=float(CONFIG["training"]["weight_decay"])
+        )
     scaler = GradScaler(device.type, enabled=CONFIG["training"]["use_amp"])
 
     total_steps = CONFIG["training"]["epochs"] * math.ceil(len(train_loader) / CONFIG["training"]["grad_accum_steps"])
@@ -160,7 +175,7 @@ def main():
         if not os.path.exists(log_file):
             with open(log_file, "w", newline="") as f:
                 csv.writer(f).writerow(["epoch", "loss", "lr", "knn_acc", "pos", "neg", "margin",
-                                        "align", "unif", "psim", "nsim", "rnorm", "std", "gn",
+                                        "align", "unif", "psim", "nsim", "rnorm", "std", "norm", "qstd", "gn",
                                         "tput", "data_err"])
         if not os.path.exists(proj_log_file):
             with open(proj_log_file, "w", newline="") as f:
@@ -219,7 +234,7 @@ def main():
                 metrics['pos'], metrics['neg'], metrics['margin'], metrics['align'],
                 metrics['unif'], metrics['pos_sim'], metrics['neg_sim'],
                 controller.history['ratio_norm'][-1] if controller.history['ratio_norm'] else 1.0,
-                metrics['std'], metrics['gn'], metrics['tput'],
+                metrics['std'], metrics['norm'], metrics['queue_std'], metrics['gn'], metrics['tput'],
                 metrics.get('data_err', 0)
             ])
 
@@ -240,7 +255,7 @@ def main():
                             writer.writeheader()
                         writer.writerow(p_stats)
 
-            logger.info(f"Ep {epoch+1} | Loss {metrics['loss']:.3f} | U: {metrics['unif']:.2f} | LR: {optimizer.param_groups[0]['lr']:.4f} | Err: {metrics.get('data_err', 0):.2f}%")
+            logger.info(f"Ep {epoch+1} | Loss {metrics['loss']:.3f} | U: {metrics['unif']:.2f} | Std: {metrics['std']:.3f} | Norm: {metrics['norm']:.2f} | QStd: {metrics['queue_std']:.3f} | Pos: {metrics['pos_sim']:.2f} | Neg: {metrics['neg_sim']:.2f}")
 
             if use_wandb:
                 try:
@@ -257,6 +272,8 @@ def main():
                         "train/neg_sim": metrics['neg_sim'],
                         "train/ratio_norm": controller.history['ratio_norm'][-1] if controller.history['ratio_norm'] else 1.0,
                         "train/grad_norm": metrics['gn'],
+                        "train/norm": metrics['norm'],
+                        "train/queue_std": metrics['queue_std'],
                         "train/pos_loss": metrics['pos'],
                         "train/neg_loss": metrics['neg'],
                         "train/tput": metrics['tput'],

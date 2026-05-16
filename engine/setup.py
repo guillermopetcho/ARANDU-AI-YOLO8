@@ -213,7 +213,9 @@ def build_dataloaders(CONFIG, is_distributed, rank):
     )
 
     eval_transform = T.Compose([
-        T.Resize(256), T.CenterCrop(224), T.ToTensor(),
+        # B-EVAL FIX: resolución elevada a 320px (match cercano a los 384 del entrenamiento SSL).
+        # Usar 224 introducía discrepancia de distribución en la evaluación KNN.
+        T.Resize(320), T.CenterCrop(320), T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     # Pasar el data_yaml para que YOLOClassificationDataset lea las clases reales
@@ -233,25 +235,39 @@ def build_model(CONFIG, is_distributed, device, rank, local_rank):
     logger = logging.getLogger("AranduSSL")
     model_base_raw = ModelBase(
         dim=CONFIG["moco"]["dim"],
-        predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 4096)
+        # B-PRED FIX: default cambiado a 1024 (coherente con el YAML corregido).
+        predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 1024)
     ).to(device, memory_format=torch.channels_last)
 
-    if is_distributed:
-        model_base_raw = nn.SyncBatchNorm.convert_sync_batchnorm(model_base_raw)
+    # B3 FIX: SyncBatchNorm no tiene efecto sobre ModelBase (usa LayerNorm, no BN).
+    # Se elimina la llamada innecesaria para evitar confusión y posibles conflictos
+    # si en el futuro se añaden capas BN explícitamente.
+    # Si el modelo volviera a usar BN, descomentar la siguiente línea:
+    # if is_distributed:
+    #     model_base_raw = nn.SyncBatchNorm.convert_sync_batchnorm(model_base_raw)
 
     model_q = copy.deepcopy(model_base_raw)
     model_k = copy.deepcopy(model_base_raw).to(device, memory_format=torch.channels_last)
 
+    # B-COMPILE FIX: torch.compile controlado por config, desactivado por defecto.
+    # Activarlo solo en el segundo run (post-validación de estabilidad).
+    # Para activar: añadir `use_compile: true` en la sección `training:` del YAML.
+    use_compile = CONFIG.get("training", {}).get("use_compile", False)
     is_compiled = False
-    if hasattr(torch, "compile"):
+    if use_compile and hasattr(torch, "compile"):
         try:
-            model_q = torch.compile(model_q, dynamic=True)
+            model_q = torch.compile(model_q, mode="reduce-overhead", dynamic=True)
             is_compiled = True
+            if rank == 0: logger.info("⚡ torch.compile activado (reduce-overhead).")
         except Exception as e:
-            if rank == 0: logger.warning(f"No se pudo compilar el modelo: {e}")
+            if rank == 0: logger.warning(f"⚠️ torch.compile falló: {e}. Continuando sin compilar.")
+    elif rank == 0 and not use_compile:
+        logger.info("🔒 torch.compile desactivado (use_compile=false en config).")
 
     model_k.eval()
     for p in model_k.parameters(): p.requires_grad = False
+    # Nota: El guard de BatchNorm se mantiene por retrocompatibilidad con checkpoints
+    # anteriores que podían contener capas BN.
     for m in model_k.modules():
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
             m.eval()

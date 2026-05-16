@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
-from torchvision import models, transforms as T
+import timm
+from torchvision import transforms as T
 from torch.utils.data import Dataset
 from PIL import Image
 import random
@@ -17,18 +18,11 @@ import time
 
 from utils.distributed import concat_all_gather
 
-
 # ---------------------------------------------------------------------------
-# Contador de errores de carga compartido entre procesos worker
+# Contadores y Helpers
 # ---------------------------------------------------------------------------
 
 class _ThreadSafeFallbackCounter:
-    """Contador thread-safe basado en threading.Lock como fallback.
-
-    Se usa cuando multiprocessing.Value no está disponible o no es compatible
-    con el contexto de spawn (macOS, Windows). En ese caso, los errores de
-    workers forkeados no son visibles, pero la clase no crashea.
-    """
     def __init__(self):
         self.value = 0
         self._lock = threading.Lock()
@@ -36,109 +30,72 @@ class _ThreadSafeFallbackCounter:
     def get_lock(self):
         return self._lock
 
-
 def _make_shared_counter():
-    """Crea un contador entero compartido entre procesos, compatible con el
-    contexto de multiprocessing que usa el DataLoader de PyTorch.
-
-    En Linux (fork): usa multiprocessing.Value directamente. Los workers
-    forkeados heredan la memoria compartida y las actualizaciones son visibles.
-
-    En macOS/Windows (spawn): multiprocessing.Value también funciona porque
-    los objetos compartidos usan memoria de sistema (mmap) en lugar de heredar
-    el espacio de proceso. Se detecta el contexto real y se crea el Value conél.
-
-    Fallback: si algo falla inesperadamente, retorna un contador thread-safe
-    local (no compartido entre procesos) con un warning.
-    """
     logger = logging.getLogger("AranduSSL")
     try:
-        # Detectar el contexto real que usará PyTorch.
-        # torch.multiprocessing.get_start_method() puede ser 'fork', 'forkserver' o 'spawn'.
         import torch.multiprocessing as tmp
         start_method = tmp.get_start_method(allow_none=True) or 'fork'
         ctx = multiprocessing.get_context(start_method)
         counter = ctx.Value('i', 0)
-        logger.debug(f"MoCoDataset: contador de errores usando mp.Value (ctx={start_method})")
         return counter
     except Exception as e:
-        logger.warning(
-            f"MoCoDataset: no se pudo crear mp.Value compartido ({e}). "
-            "El contador de errores de carga será local a cada proceso (monitoreo aproximado)."
-        )
+        logger.warning("MoCoDataset: Fallback local counter.")
         return _ThreadSafeFallbackCounter()
 
-# Eliminado RandomRotate90 para evitar transformaciones físicamente imposibles en cultivos.
+# ---------------------------------------------------------------------------
+# Data Augmentation (Multi-Crop Jerárquico)
+# ---------------------------------------------------------------------------
 
-def get_transforms():
-    """Devuelve transformaciones asimétricas para las 2 vistas globales (224x224).
-    La asimetría (MoCo v3 / BYOL style) ayuda a evitar el colapso y mejora el aprendizaje.
-    """
-    # Vista 1: Más fuerte en color, con Blur moderado, sin Solarize.
-    t_q = T.Compose([
-        T.RandomResizedCrop(224, scale=(0.2, 1.0)),
-        T.RandomHorizontalFlip(),
-        T.RandomRotation(degrees=15), # Simula viento/ángulo cámara real
-        T.ColorJitter(0.4, 0.4, 0.4, 0.1),
-        T.RandomGrayscale(p=0.2),
-        T.GaussianBlur(kernel_size=9, sigma=(0.1, 2.0)),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    
-    # Vista 2: Con Solarize probabilístico y Blur más fuerte.
-    t_k = T.Compose([
-        T.RandomResizedCrop(224, scale=(0.2, 1.0)),
-        T.RandomHorizontalFlip(),
-        T.RandomRotation(degrees=15),
-        T.ColorJitter(0.4, 0.4, 0.4, 0.1),
-        T.RandomGrayscale(p=0.2),
-        T.RandomSolarize(threshold=128, p=0.2), # Asimetría: Solarize solo aquí
-        T.GaussianBlur(kernel_size=9, sigma=(0.5, 2.0)), # Blur base más alto
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
-    ])
-    return t_q, t_k
-
-def get_local_transforms(n_crops=4, scale=(0.05, 0.4), size=96):
-    """
-    Devuelve una lista de N transformaciones para vistas locales (Multi-Crop DINO-style).
-    Las vistas locales son recortes pequeños (96x96 por defecto) de baja escala
-    que fuerzan al modelo a aprender invarianzas finas del dominio (ej. manchas en hojas).
-    """
-    return [
-        T.Compose([
-            T.RandomResizedCrop(size, scale=scale),
+def get_global_transforms():
+    """ 2 vistas globales de 384x384 para estructura foliar completa. """
+    # B2 FIX: crear instancias INDEPENDIENTES de transforms para t_q y t_k.
+    # ColorJitter y GaussianBlur son stateful — compartir instancias entre t_q/t_k
+    # puede causar que ambas vistas reciban los mismos parámetros aleatorios.
+    def _make_global_pipeline():
+        return T.Compose([
+            T.RandomResizedCrop(384, scale=(0.65, 1.0)),
             T.RandomHorizontalFlip(),
-            T.RandomSolarize(threshold=128, p=0.1),
-            T.ColorJitter(0.4, 0.4, 0.2, 0.1),
-            T.RandomGrayscale(p=0.2),
-            T.GaussianBlur(kernel_size=5, sigma=(0.1, 1.5)),
+            T.RandomVerticalFlip(p=0.5),
+            T.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.06, hue=0.02),
+            T.RandomGrayscale(p=0.01),
+            T.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
             T.ToTensor(),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-        for _ in range(n_crops)
-    ]
+    return _make_global_pipeline(), _make_global_pipeline()
+
+def get_local_transforms():
+    """ 4 vistas locales (96x96) y 2 vistas ultra-locales (64x64). """
+    
+    # B2 FIX: cada llamada crea nuevas instancias independientes.
+    def _make_local_pipeline(size, scale):
+        return T.Compose([
+            T.RandomResizedCrop(size, scale=scale),
+            T.RandomHorizontalFlip(),
+            T.RandomVerticalFlip(p=0.5),
+            T.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.06, hue=0.02),
+            T.RandomGrayscale(p=0.01),
+            T.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
+            T.ToTensor(),
+            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+    
+    # 4 vistas de 96x96 — capturan estructuras intermedias (bordes, manchas)
+    t_96 = [_make_local_pipeline(96, (0.08, 0.25)) for _ in range(4)]
+    # 2 vistas de 64x64 — capturan micro-lesiones y texturas ultrafinas
+    t_64 = [_make_local_pipeline(64, (0.02, 0.08)) for _ in range(2)]
+    
+    return t_96 + t_64
+
+# ---------------------------------------------------------------------------
+# Dataset e Índices
+# ---------------------------------------------------------------------------
 
 class MoCoDataset(Dataset):
     def __init__(self, paths, moco_config=None):
         self.paths = paths
-        self.t_q, self.t_k = get_transforms()
-        
-        # Multi-Crop: Configuración de vistas locales
-        if moco_config is not None:
-            n_local = moco_config.get('num_local_crops', 0)
-            scale_min = moco_config.get('local_crop_scale_min', 0.05)
-            scale_max = moco_config.get('local_crop_scale_max', 0.4)
-            size = moco_config.get('local_crop_size', 96)
-        else:
-            n_local = 0
-            scale_min, scale_max, size = 0.05, 0.4, 96
-        
-        self.local_transforms = get_local_transforms(n_local, (scale_min, scale_max), size) if n_local > 0 else []
-        # Contador de errores de carga compartido entre workers.
-        # Usa _make_shared_counter() para ser compatible con fork, spawn y forkserver,
-        # detectando automáticamente el contexto de multiprocessing de PyTorch.
+        self.t_q, self.t_k = get_global_transforms()
+        self.local_transforms = get_local_transforms()
         self._load_errors = _make_shared_counter()
         self.logger = logging.getLogger("AranduSSL")
 
@@ -146,7 +103,6 @@ class MoCoDataset(Dataset):
         return len(self.paths)
 
     def __getitem__(self, idx):
-        # M4 FIX: Límite de reintentos para evitar loop infinito si muchas imágenes son corruptas
         max_retries = min(100, len(self.paths))
         last_err = None
         for attempt in range(max_retries):
@@ -155,122 +111,109 @@ class MoCoDataset(Dataset):
                 v_q = self.t_q(img)
                 v_k = self.t_k(img)
                 
-                if self.local_transforms:
-                    # Apilar N vistas locales: [N_local, C, H, W]
-                    locals_ = torch.stack([t(img) for t in self.local_transforms])
-                else:
-                    # Placeholder vacío para mantener collation consistente [0, C, H, W]
-                    locals_ = torch.empty(0, *v_q.shape)
+                # Lista de tensores en lugar de un tensor apilado (torch.stack)
+                # PyTorch `default_collate` agrupará esto en una lista de Batches en el DataLoader
+                locals_ = [t(img) for t in self.local_transforms]
                 
                 return v_q, v_k, locals_
             except Exception as e:
                 last_err = e
-                # B12 FIX: Incrementar contador de errores de carga (visible entre workers)
                 with self._load_errors.get_lock():
                     self._load_errors.value += 1
                 if len(self.paths) == 0:
-                    raise RuntimeError("MoCoDataset está vacío, no hay imágenes disponibles.")
+                    raise RuntimeError("MoCoDataset está vacío.")
                 idx = random.randint(0, len(self.paths) - 1)
-        raise RuntimeError(f"MoCoDataset: {max_retries} imágenes consecutivas fallaron al cargarse. Último error: {last_err}")
+        raise RuntimeError(f"MoCoDataset falló 100 veces. Último error: {last_err}")
 
 def build_index(root, rank, cache_path):
-    """Construye o carga el índice de imágenes del dataset con sincronización DDP.
-    
-    C2 FIX: Solo el Rank 0 decide si hay que reconstruir el índice.
-    Se usa una barrera para asegurar que los Ranks >= 1 no intenten leer
-    un archivo parcial mientras Rank 0 escribe.
-    """
     is_dist = dist.is_available() and dist.is_initialized()
     
-    # 1. Rank 0 verifica y construye si es necesario
     if rank == 0:
         rebuild = True
         if os.path.exists(cache_path):
             try:
-                # Validar que el caché no esté corrupto o desactualizado (paths absolutos de Kaggle cambian)
                 cached_files = np.load(cache_path, allow_pickle=True).tolist()
                 if len(cached_files) > 0 and cached_files[0].startswith(root) and os.path.exists(cached_files[0]):
                     rebuild = False
-                else:
-                    logging.getLogger("AranduSSL").warning("⚠️ Caché obsoleto o inválido detectado. Reconstruyendo índice...")
             except Exception:
                 pass
                 
         if rebuild:
             _logger = logging.getLogger("AranduSSL")
-            # L1 FIX: Loguear antes del rglob para que en NFS/Kaggle (donde puede
-            # tardar 10-30s) el proceso no parezca colgado sin ninguna salida.
-            _logger.info(f"📂 Escaneando imágenes en {root} (puede tardar en NFS)...")
-            _t0 = time.monotonic()
+            _logger.info(f"📂 Escaneando {root}...")
             files = sorted([str(f) for ext in ["*.jpg", "*.png", "*.jpeg", "*.JPG", "*.PNG", "*.JPEG"] for f in Path(root).rglob(ext)])
-            _elapsed = time.monotonic() - _t0
             if len(files) == 0:
-                raise RuntimeError(f"No se encontraron imágenes en {root}")
+                raise RuntimeError(f"Sin imágenes en {root}")
             np.save(cache_path, files)
-            _logger.info(f"📁 Índice creado con {len(files)} imágenes en {_elapsed:.1f}s.")
+            _logger.info(f"📁 Índice creado con {len(files)} imágenes.")
     
-    # 2. Barrera crítica: todos esperan a que Rank 0 termine de escribir en disco
     if is_dist:
         dist.barrier(device_ids=[torch.cuda.current_device()])
     
-    # 3. Todos cargan el mismo archivo (ahora garantizado que existe y está completo)
     if not os.path.exists(cache_path):
-        raise RuntimeError(f"Fallo crítico: El cache {cache_path} no existe tras la barrera DDP.")
+        raise RuntimeError(f"Cache {cache_path} no existe.")
         
     return np.load(cache_path, allow_pickle=True).tolist()
 
+# ---------------------------------------------------------------------------
+# Arquitectura (ConvNeXt V2 Tiny + MoCo v3)
+# ---------------------------------------------------------------------------
+
 class ModelBase(nn.Module):
     """
-    Backbone ResNet50 + Projector MLP 3-capas + Predictor MLP (MoCo v3).
-    
-    Durante entrenamiento:
-      - Queries: forward(x, use_predictor=True)  → predictor(projector(encoder(x)))
-      - Keys:    forward(x, use_predictor=False) → projector(encoder(x))
-    Durante evaluación/export:
-      - forward(x) → projector(encoder(x))  [use_predictor=False por defecto]
+    Backbone ConvNeXt V2 Tiny + Projector MLP + Predictor MLP (MoCo v3).
     """
-    def __init__(self, dim=256, predictor_hidden_dim=4096):
+    def __init__(self, dim=512, predictor_hidden_dim=1024):
         super().__init__()
-        self.encoder = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-        self.encoder.fc = nn.Identity()
         
-        # Projector: 2048 → 2048 → 2048 → dim
+        # Encoder: ConvNeXt V2 Tiny (num_classes=0 remueve el clasificador y aplica Global Average Pooling)
+        # Salida garantizada: 768 canales.
+        self.encoder = timm.create_model(
+            "convnextv2_tiny", 
+            pretrained=True, 
+            num_classes=0
+        )
+        self.encoder.set_grad_checkpointing(enable=True)
+        
+        # Projector: 768 -> 2048 -> 512
         self.projector = nn.Sequential(
-            nn.Linear(2048, 2048),
-            nn.BatchNorm1d(2048),
-            nn.ReLU(inplace=True),
-            nn.Linear(2048, 2048),
-            nn.BatchNorm1d(2048),
+            nn.Linear(768, 2048),
+            nn.LayerNorm(2048),
             nn.ReLU(inplace=True),
             nn.Linear(2048, dim),
-            nn.BatchNorm1d(dim, affine=False)
+            nn.LayerNorm(dim, elementwise_affine=False)
         )
         
-        # Predictor MLP (MoCo v3): dim → predictor_hidden_dim → dim
-        # Solo se aplica al modelo Query durante el entrenamiento.
-        # Separa la dinámica de aprendizaje del query vs el key, mejorando la estabilidad.
+        # Predictor MLP (MoCo v3 asimétrico): 512 -> 1024 -> 512
         self.predictor = nn.Sequential(
             nn.Linear(dim, predictor_hidden_dim),
-            nn.BatchNorm1d(predictor_hidden_dim),
+            nn.LayerNorm(predictor_hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(predictor_hidden_dim, dim)
         )
 
-    def forward(self, x, use_predictor=False):
-        h = self.encoder(x)
-        z = self.projector(h)
-        # Normalizar en float32 para evitar overflow de FP16
+    def forward(self, x, use_predictor=False, return_norm=False):
+        h = self.encoder(x)  # Shape: [B, 768]
+        z = self.projector(h) # Shape: [B, 512]
+        
+        z_norm = z.norm(dim=1).mean()
         z = F.normalize(z.float(), dim=1).to(z.dtype)
         
         if use_predictor:
-            p = self.predictor(z)
+            p = self.predictor(z) # Shape: [B, 512]
+            p_norm = p.norm(dim=1).mean()
             p = F.normalize(p.float(), dim=1).to(p.dtype)
+            if return_norm: return p, p_norm
             return p
         
+        if return_norm: return z, z_norm
         return z
 
 class MoCoQueue(nn.Module):
-    def __init__(self, dim=256, K=32768):
+    """
+    Cola FIFO para representaciones negativas. K por defecto a 16384.
+    """
+    def __init__(self, dim=512, K=16384):
         super().__init__()
         self.K = K
         self.register_buffer("queue", F.normalize(torch.randn(dim, K), dim=0))
