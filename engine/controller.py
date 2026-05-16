@@ -82,8 +82,8 @@ class TrainingController:
         self.temp_adj = 0.0
         
         # Estado PID Geométrico (Control Continuo Acoplado)
-        self.tau = config['moco']['temp_end'] if 'moco' in config else 0.10
-        self.alpha = 1.0 - (config['moco']['momentum_base'] if 'moco' in config else 0.999)
+        self.tau = config['moco'].get('temp_start', 0.15) if 'moco' in config else 0.15
+        self.alpha = 1.0 - config['moco'].get('momentum_start', 0.996) if 'moco' in config else 0.004
         self.current_m = 1.0 - self.alpha
         self.lr_scale = 1.0
         self.lr_step_factor = 1.0
