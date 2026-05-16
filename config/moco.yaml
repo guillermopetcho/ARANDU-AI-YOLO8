@@ -9,6 +9,7 @@ training:
   num_workers: 4
   lr_base: 0.0005  # LR más seguro para estabilización
   weight_decay: 0.05  # Aumentado para ConvNeXt V2 (evita explosión de norma)
+  grad_clip: 0.5
   use_amp: True
   save_every: 1   # Guardar cada epoch en mini-fase para no perder el mejor
   early_stopping_patience: 3  # Parar rápido si no mejora
@@ -19,9 +20,10 @@ training:
 moco:
   dim: 512
   queue: 16384         # Cola recomendada para estabilidad de representación global
-  momentum_base: 0.999
+  momentum_start: 0.996
+  momentum_end: 0.9995
   temp_start: 0.15     # Empezamos más alto (más repulsión) para forzar la separación inicial
-  temp_end: 0.10       # τ mínimo: preservar estructura local
+  temp_end: 0.12       # τ mínimo: preservar estructura local
   temp_warmup_steps: 100
   # MoCo v3: Predictor MLP (cabeza de predicción para queries solamente)
   predictor_hidden_dim: 1024  # 512→1024→512 (diseño original). 4096 cuadriplicaba VRAM innecesariamente.
@@ -33,7 +35,7 @@ moco:
   local_crop_scale_min: 0.02  # escala mínima 64px (hardcodeado)
   local_crop_scale_max: 0.25  # escala máxima 96px (hardcodeado)
   local_crop_size: 96         # tamaño vista local mayor (hardcodeado)
-  local_loss_weight: 0.25     # Reducido de 0.5: menos dominancia local, más estructura global
+  local_loss_weight: 0.10     # Reducido de 0.25 para estabilizar inicio
 
 paths:
   dataset_root: "/kaggle/input/datasets/joaquinignaciopetcho/texturas-bases/TEXTURAS_BASES"

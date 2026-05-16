@@ -82,7 +82,7 @@ class MoCoTrainer:
 
                     l_pos1 = torch.einsum('nc,nc->n', [q1, k1]).unsqueeze(-1)
                     l_neg1 = torch.einsum('nc,ck->nk', [q1, self.queue.queue.detach()])
-                    logits1 = torch.cat([l_pos1, l_neg1], dim=1) / temp
+                    logits1 = (torch.cat([l_pos1, l_neg1], dim=1) / temp).clamp(-15, 15)
 
                     # === Vista Global 2: simétrica ===
                     q2 = self.model_q(v_k, use_predictor=True)
@@ -96,7 +96,7 @@ class MoCoTrainer:
 
                     l_pos2 = torch.einsum('nc,nc->n', [q2, k2]).unsqueeze(-1)
                     l_neg2 = torch.einsum('nc,ck->nk', [q2, self.queue.queue.detach()])
-                    logits2 = torch.cat([l_pos2, l_neg2], dim=1) / temp
+                    logits2 = (torch.cat([l_pos2, l_neg2], dim=1) / temp).clamp(-15, 15)
 
                     labels = torch.zeros(logits1.shape[0], dtype=torch.long, device=self.device)
                     loss_global = (F.cross_entropy(logits1, labels) + F.cross_entropy(logits2, labels)) * 0.5
@@ -124,7 +124,7 @@ class MoCoTrainer:
                             
                             l_pos_l = torch.einsum('nc,nc->n', [q_local, k1_exp]).unsqueeze(-1)
                             l_neg_l = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
-                            logits_l = torch.cat([l_pos_l, l_neg_l], dim=1) / temp
+                            logits_l = (torch.cat([l_pos_l, l_neg_l], dim=1) / temp).clamp(-15, 15)
                             
                             # Acumular el loss multiplicando por N_crops para mantener escala
                             loss_local += F.cross_entropy(logits_l, labels_local) * N_crops
@@ -168,7 +168,8 @@ class MoCoTrainer:
                 grad_norm_sum += gn
                 grad_steps += 1
 
-                torch.nn.utils.clip_grad_norm_(self.model_q.parameters(), 1.0)
+                grad_clip_val = self.config['training'].get('grad_clip', 0.5)
+                torch.nn.utils.clip_grad_norm_(self.model_q.parameters(), grad_clip_val)
 
                 if self.config['training']['use_amp']:
                     self.scaler.step(self.optimizer)

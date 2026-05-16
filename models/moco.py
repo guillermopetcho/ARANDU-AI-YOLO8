@@ -82,10 +82,11 @@ def get_local_transforms():
     
     # 4 vistas de 96x96 — capturan estructuras intermedias (bordes, manchas)
     t_96 = [_make_local_pipeline(96, (0.08, 0.25)) for _ in range(4)]
+    # TEMPORALMENTE DESACTIVADO PARA ESTABILIZAR EL PRIMER RUN
     # 2 vistas de 64x64 — capturan micro-lesiones y texturas ultrafinas
-    t_64 = [_make_local_pipeline(64, (0.02, 0.08)) for _ in range(2)]
+    # t_64 = [_make_local_pipeline(64, (0.02, 0.08)) for _ in range(2)]
     
-    return t_96 + t_64
+    return t_96 # + t_64
 
 # ---------------------------------------------------------------------------
 # Dataset e Índices
@@ -197,12 +198,12 @@ class ModelBase(nn.Module):
         z = self.projector(h) # Shape: [B, 512]
         
         z_norm = z.norm(dim=1).mean()
-        z = F.normalize(z.float(), dim=1).to(z.dtype)
+        z = F.normalize(z.float(), dim=1, eps=1e-6).to(z.dtype)
         
         if use_predictor:
             p = self.predictor(z) # Shape: [B, 512]
             p_norm = p.norm(dim=1).mean()
-            p = F.normalize(p.float(), dim=1).to(p.dtype)
+            p = F.normalize(p.float(), dim=1, eps=1e-6).to(p.dtype)
             if return_norm: return p, p_norm
             return p
         
@@ -222,7 +223,7 @@ class MoCoQueue(nn.Module):
     @torch.no_grad()
     def enqueue_dequeue(self, keys, step=None):
         keys = concat_all_gather(keys.detach())
-        keys = F.normalize(keys, dim=1)
+        keys = F.normalize(keys, dim=1, eps=1e-6)
         batch_size = keys.shape[0]
         
         if batch_size > self.K:
