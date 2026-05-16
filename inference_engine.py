@@ -19,6 +19,7 @@ except ImportError:
 
 from evaluation.knn import extract_features_fast
 from engine.setup import build_eval_dataset
+from models.moco import ModelBase
 
 class AranduInferenceEngine:
     def __init__(self, config_path="config/moco.yaml", device=None):
@@ -33,8 +34,8 @@ class AranduInferenceEngine:
         self.num_classes = None
 
         self.transform = transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
+            transforms.Resize(320),
+            transforms.CenterCrop(320),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
@@ -96,14 +97,14 @@ class AranduInferenceEngine:
         print("[*] Cargando Encoder...")
         self.encoder = ModelBase(
             dim=self.config['moco']['dim'],
-            predictor_hidden_dim=self.config['moco'].get('predictor_hidden_dim', 4096)
+            predictor_hidden_dim=self.config['moco'].get('predictor_hidden_dim', 1024)
         )
         self.encoder.load_state_dict(torch.load(encoder_path, map_location='cpu', weights_only=True))
         self.encoder = self.encoder.to(self.device).eval()
 
         print("[*] Cargando Head Lineal...")
         with torch.no_grad():
-            dummy = torch.randn(1, 3, 224, 224).to(self.device)
+            dummy = torch.randn(1, 3, 320, 320).to(self.device)
             proj_dim = self.encoder(dummy, use_predictor=False).shape[-1]
             
         self.head = nn.Sequential(

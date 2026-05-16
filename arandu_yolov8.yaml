@@ -1,90 +1,102 @@
 # =========================================================
-# ARANDU + YOLO (Backbone SSL MoCo ResNet50 con Adaptador Espacial)
+# ARANDU + YOLO (Backbone SSL ConvNeXt V2 Tiny — P2/P3/P4/P5)
 # =========================================================
-
+#
 # ⚠️  AJUSTAR nc AL NÚMERO REAL DE CLASES DEL DATASET ANTES DE ENTRENAR.
 # El data.yaml del dataset YOLO define el valor correcto en el campo 'nc'.
 # Ejemplos:
+#   nc: 5  → 5 clases (healthy, mosaic, frog_eye, bacterial_blight, potassium_deficiency)
 #   nc: 1  → detección binaria (sano vs. enfermo)
-#   nc: 18 → 18 enfermedades específicas de soja
 # Usar el valor incorrecto aquí causa un error de dimensión en el Detect head.
-nc: 18  # PLACEHOLDER — verificar contra data.yaml del dataset
+nc: 5  # Dataset soja: 5 clases de enfermedades
 
 # =========================================================
 # BACKBONE
 # =========================================================
-# AranduYOLOWrapper es un alias de AranduBackbone registrado en ultralytics.nn.modules
-# por ablation_runner.py antes de instanciar el modelo.
+# AranduYOLOWrapper = AranduBackbone (ConvNeXt V2 Tiny).
+# Registrado en ultralytics.nn.modules por ablation_runner.py antes de
+# instanciar el modelo.
 #
-# Devuelve una lista de 3 tensores [P3, P4, P5]. Ultralytics trata esta lista como
-# 3 salidas separadas, indexadas internamente como layers 1, 2, 3 (1-indexed desde
-# el inicio de la backbone).
+# Devuelve una lista de 4 tensores [P2, P3, P4, P5]:
+#   P2: [128ch, H/4,  W/4]   — micro-lesiones (Coordinate Attention)
+#   P3: [256ch, H/8,  W/8]   — lesiones pequeñas (Coordinate Attention)
+#   P4: [512ch, H/16, W/16]  — lesiones medias
+#   P5: [1024ch, H/32, W/32] — contexto semántico global
 #
-# Mapa de índices (absolutos desde layer 0):
-#   Layer 0 → AranduYOLOWrapper (genera la lista [P3_raw, P4_raw, P5_raw])
-#   Layer 1 → P3 adaptado  [256ch, H/8,  W/8]   (small objects)
-#   Layer 2 → P4 adaptado  [512ch, H/16, W/16]  (medium objects)
-#   Layer 3 → P5 adaptado  [1024ch, H/32, W/32] (large objects)
+# Mapa de layers (absolutos):
+#   Layer 0 → AranduYOLOWrapper (genera la lista [P2, P3, P4, P5])
+#   Layer 1 → P2 adaptado  [128ch,  H/4]   (micro-lesiones aéreas)
+#   Layer 2 → P3 adaptado  [256ch,  H/8]   (small objects)
+#   Layer 3 → P4 adaptado  [512ch,  H/16]  (medium objects)
+#   Layer 4 → P5 adaptado  [1024ch, H/32]  (large objects / contexto)
 
 backbone:
   - [-1, 1, AranduYOLOWrapper, []]
 
 # =========================================================
-# NECK (PAN-FPN)
+# NECK (PAN-FPN — P2 a P5)
 # =========================================================
-# Numeración de layers con backbone incluido:
-#   0: AranduYOLOWrapper (lista [P3, P4, P5])
-#   1: P3  [256ch, H/8]   — backbone output index 0
-#   2: P4  [512ch, H/16]  — backbone output index 1
-#   3: P5  [1024ch, H/32] — backbone output index 2
 #
-# A partir de aquí, el Neck construye el FPN top-down + PAN bottom-up:
+# Top-Down (FPN): P5 → P4 → P3 → P2
+#   5:  Upsample(P5)             → [1024ch, H/16]
+#   6:  Concat([P4, UP_P5])      → [1536ch, H/16]
+#   7:  C2f([6], 512)            → [512ch,  H/16]   ← P4_fpn
 #
-# --- Top-Down (FPN): P5 → P4 → P3 ---
-#   4: Upsample(P5)         → [1024ch, H/16]
-#   5: Concat([P4, UP_P5])  → [1536ch, H/16]
-#   6: C2f([5], 512)        → [512ch, H/16]   ← P4_fpn
+#   8:  Upsample(P4_fpn)         → [512ch,  H/8]
+#   9:  Concat([P3, UP_P4])      → [768ch,  H/8]
+#   10: C2f([9], 256)            → [256ch,  H/8]    ← P3_fpn
 #
-#   7: Upsample(P4_fpn)     → [512ch, H/8]
-#   8: Concat([P3, UP_P4])  → [768ch, H/8]
-#   9: C2f([8], 256)        → [256ch, H/8]    ← P3_final (small objects)
+#   11: Upsample(P3_fpn)         → [256ch,  H/4]
+#   12: Concat([P2, UP_P3])      → [384ch,  H/4]
+#   13: C2f([12], 128)           → [128ch,  H/4]    ← P2_final (micro-lesiones)
 #
-# --- Bottom-Up (PAN): P3 → P4 → P5 ---
-#  10: Conv(P3_final, d=2)  → [256ch, H/16]
-#  11: Concat([P4_fpn, ↓P3]) → [768ch, H/16]
-#  12: C2f([11], 512)       → [512ch, H/16]   ← P4_final (medium objects)
+# Bottom-Up (PAN): P2 → P3 → P4 → P5
+#   14: Conv(P2_final, stride=2) → [128ch,  H/8]
+#   15: Concat([P3_fpn, ↓P2])   → [384ch,  H/8]
+#   16: C2f([15], 256)           → [256ch,  H/8]    ← P3_final (small)
 #
-#  13: Conv(P4_final, d=2)  → [512ch, H/32]
-#  14: Concat([P5, ↓P4])   → [1536ch, H/32]
-#  15: C2f([14], 1024)      → [1024ch, H/32]  ← P5_final (large objects)
+#   17: Conv(P3_final, stride=2) → [256ch,  H/16]
+#   18: Concat([P4_fpn, ↓P3])   → [768ch,  H/16]
+#   19: C2f([18], 512)           → [512ch,  H/16]   ← P4_final (medium)
+#
+#   20: Conv(P4_final, stride=2) → [512ch,  H/32]
+#   21: Concat([P5, ↓P4])        → [1536ch, H/32]
+#   22: C2f([21], 1024)          → [1024ch, H/32]   ← P5_final (large)
 
 neck:
-  # FPN Top-Down
-  - [3, 1, nn.Upsample, [None, 2, "nearest"]]   # 4: Upsample P5
-  - [[4, 2], 1, Concat, [1]]                     # 5: Concat(UP_P5, P4)
-  - [5, 3, C2f, [512]]                           # 6: P4_fpn
+  # --- FPN Top-Down ---
+  - [4, 1, nn.Upsample, [None, 2, "nearest"]]    # 5:  Upsample P5
+  - [[5, 3], 1, Concat, [1]]                      # 6:  Concat(UP_P5, P4)
+  - [6, 3, C2f, [512]]                            # 7:  P4_fpn
 
-  - [6, 1, nn.Upsample, [None, 2, "nearest"]]   # 7: Upsample P4_fpn
-  - [[7, 1], 1, Concat, [1]]                     # 8: Concat(UP_P4, P3)
-  - [8, 3, C2f, [256]]                           # 9: P3_final (small)
+  - [7, 1, nn.Upsample, [None, 2, "nearest"]]    # 8:  Upsample P4_fpn
+  - [[8, 2], 1, Concat, [1]]                      # 9:  Concat(UP_P4, P3)
+  - [9, 3, C2f, [256]]                            # 10: P3_fpn
 
-  # PAN Bottom-Up
-  - [9, 1, Conv, [256, 3, 2]]                    # 10: Downsample P3_final
-  - [[10, 6], 1, Concat, [1]]                    # 11: Concat(↓P3, P4_fpn)
-  - [11, 3, C2f, [512]]                          # 12: P4_final (medium)
+  - [10, 1, nn.Upsample, [None, 2, "nearest"]]   # 11: Upsample P3_fpn
+  - [[11, 1], 1, Concat, [1]]                     # 12: Concat(UP_P3, P2)
+  - [12, 3, C2f, [128]]                           # 13: P2_final (micro-lesiones)
 
-  - [12, 1, Conv, [512, 3, 2]]                   # 13: Downsample P4_final
-  - [[13, 3], 1, Concat, [1]]                    # 14: Concat(↓P4, P5)
-  - [14, 3, C2f, [1024]]                         # 15: P5_final (large)
+  # --- PAN Bottom-Up ---
+  - [13, 1, Conv, [128, 3, 2]]                   # 14: Downsample P2_final
+  - [[14, 10], 1, Concat, [1]]                    # 15: Concat(↓P2, P3_fpn)
+  - [15, 3, C2f, [256]]                           # 16: P3_final (small)
+
+  - [16, 1, Conv, [256, 3, 2]]                   # 17: Downsample P3_final
+  - [[17, 7], 1, Concat, [1]]                     # 18: Concat(↓P3, P4_fpn)
+  - [18, 3, C2f, [512]]                           # 19: P4_final (medium)
+
+  - [19, 1, Conv, [512, 3, 2]]                   # 20: Downsample P4_final
+  - [[20, 4], 1, Concat, [1]]                     # 21: Concat(↓P4, P5)
+  - [21, 3, C2f, [1024]]                          # 22: P5_final (large)
 
 # =========================================================
-# HEAD (Detect)
+# HEAD (Detect — 4 escalas P2/P3/P4/P5)
 # =========================================================
-# Recibe las 3 escalas del PAN: P3_final(9), P4_final(12), P5_final(15)
-# Índices absolutos en la lista combinada [backbone layers + neck layers]:
-#   P3_final → layer 9  (256ch,  H/8)   → predicciones de objetos pequeños
-#   P4_final → layer 12 (512ch,  H/16)  → predicciones de objetos medianos
-#   P5_final → layer 15 (1024ch, H/32)  → predicciones de objetos grandes
+# P2_final  → layer 13 (128ch,  H/4)   → micro-lesiones y lesiones muy pequeñas
+# P3_final  → layer 16 (256ch,  H/8)   → objetos pequeños
+# P4_final  → layer 19 (512ch,  H/16)  → objetos medianos
+# P5_final  → layer 22 (1024ch, H/32)  → objetos grandes y contexto
 
 head:
-  - [[9, 12, 15], 1, Detect, [nc]]
+  - [[13, 16, 19, 22], 1, Detect, [nc]]

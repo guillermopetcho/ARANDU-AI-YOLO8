@@ -9,16 +9,17 @@ from torch.utils.data import DataLoader
 import numpy as np
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, classification_report
 import matplotlib.pyplot as plt
+import sys
 import seaborn as sns
 
 from models.moco import ModelBase
 from engine.setup import build_eval_dataset
 
 def get_val_transforms():
-    """Transformaciones estándar para validación."""
+    """Transformaciones estándar para validación — alineadas con setup.py (320px)."""
     return transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        transforms.Resize(320),
+        transforms.CenterCrop(320),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
@@ -65,7 +66,7 @@ def evaluate():
     print(f"[*] Cargando Encoder: {encoder_path}")
     encoder = ModelBase(
         dim=config['moco']['dim'],
-        predictor_hidden_dim=config['moco'].get('predictor_hidden_dim', 4096)
+        predictor_hidden_dim=config['moco'].get('predictor_hidden_dim', 1024)
     )
     # Cargar pesos con weights_only=True por seguridad
     encoder.load_state_dict(torch.load(encoder_path, map_location='cpu', weights_only=True))
@@ -75,7 +76,7 @@ def evaluate():
     print(f"[*] Cargando Sonda Lineal (Clasificador): {head_path}")
     # Inferir dimensión proyectada pasando un tensor dummy
     with torch.no_grad():
-        dummy = torch.randn(1, 3, 224, 224).to(device)
+        dummy = torch.randn(1, 3, 320, 320).to(device)
         proj_dim = encoder(dummy, use_predictor=False).shape[-1]
     
     classifier = nn.Sequential(

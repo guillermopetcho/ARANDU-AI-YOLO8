@@ -35,25 +35,25 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     print("🚀 INICIANDO MODELO 2: HÍBRIDO RÍGIDO (Sin Gate)")
     print("="*50)
     
-    # Inyectamos el wrapper forzando la desactivación del Context Gate
+    # Inyectamos el wrapper sin Coordinate Attention (ablation: impacto de CoordAtt)
     class AranduYOLOWrapperNoGate(AranduBackbone):
         def __init__(self, *args, **kwargs):
-            kwargs['use_context_gate'] = False
+            # Ablation: sin CoordAtt — mide el impacto de la atención espacial posicional
+            kwargs.pop('use_context_gate', None)  # Limpiar kwarg obsoleto si existe
+            kwargs['use_coord_attn'] = False
             kwargs['moco_checkpoint_path'] = moco_ckpt
             super().__init__(*args, **kwargs)
             
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
     # M3 FIX: verificar que el registro fue exitoso antes de intentar cargar el modelo.
-    # Si Ultralytics cambió su mecanismo de resolución de clases, esto falla aquí
-    # con un mensaje claro en lugar de crashear con AttributeError dentro del build.
     assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperNoGate, \
-        "[M3] Registro de AranduYOLOWrapper (NoGate) en nn_modules falló. Verifica compatibilidad de Ultralytics."
+        "[M3] Registro de AranduYOLOWrapper (NoCoordAtt) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
     model2 = YOLO("arandu_yolov8.yaml")
-    # Congelamos explícitamente el backbone y adapter (Fase 1)
+    # Fase 1: congelar backbone, solo adaptadores entrenan
     for name, param in model2.model.named_parameters():
-        if 'backbone' in name or 'adapter' in name:
+        if 'backbone' in name:
             param.requires_grad = False
 
     model2.train(
@@ -62,7 +62,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
         imgsz=imgsz, 
         batch=batch,
         project="Ablation_SojAI", 
-        name="Model2_NoGate", 
+        name="Model2_NoCoordAtt", 
         seed=42
     )
 
@@ -73,23 +73,24 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     print("🚀 INICIANDO MODELO 3: HÍBRIDO ADAPTATIVO (Con Gate)")
     print("="*50)
     
-    # Inyectamos el wrapper habilitando el Context Gate
+    # Inyectamos el wrapper con Coordinate Attention habilitado (configuración completa)
     class AranduYOLOWrapperGate(AranduBackbone):
         def __init__(self, *args, **kwargs):
-            kwargs['use_context_gate'] = True
+            kwargs.pop('use_context_gate', None)  # Limpiar kwarg obsoleto si existe
+            kwargs['use_coord_attn'] = True
             kwargs['moco_checkpoint_path'] = moco_ckpt
             super().__init__(*args, **kwargs)
             
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapperGate)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapperGate)
-    # M3 FIX: misma verificación para el modelo con Gate.
+    # M3 FIX: misma verificación para el modelo con CoordAtt.
     assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperGate, \
-        "[M3] Registro de AranduYOLOWrapper (Gate) en nn_modules falló. Verifica compatibilidad de Ultralytics."
+        "[M3] Registro de AranduYOLOWrapper (CoordAtt) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
     model3 = YOLO("arandu_yolov8.yaml")
-    # Congelamos explícitamente el backbone y adapter (Fase 1)
+    # Fase 1: congelar backbone, solo adaptadores entrenan
     for name, param in model3.model.named_parameters():
-        if 'backbone' in name or 'adapter' in name:
+        if 'backbone' in name:
             param.requires_grad = False
 
     model3.train(
@@ -98,7 +99,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
         imgsz=imgsz, 
         batch=batch,
         project="Ablation_SojAI", 
-        name="Model3_ContextGate", 
+        name="Model3_FullArandu", 
         seed=42
     )
     

@@ -109,22 +109,28 @@ def main():
     train_loader, eval_train_loader, eval_val_loader, eval_ds, val_ds = build_dataloaders(CONFIG, is_distributed, rank)
     model_q, model_k, queue, is_compiled = build_model(CONFIG, is_distributed, device, rank, local_rank)
 
-    # C4 FIX: AdamW fused ahorra VRAM y acelera el optimizer step (ideal para T4 y ConvNeXt)
+    # C5 FIX: Excluir biases y parámetros 1D (LayerNorm) del weight decay (Best Practice MoCo v3)
+    decay_params = []
+    no_decay_params = []
+    for n, p in model_q.named_parameters():
+        if not p.requires_grad:
+            continue
+        if p.ndim <= 1 or n.endswith('.bias'):
+            no_decay_params.append(p)
+        else:
+            decay_params.append(p)
+            
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': float(CONFIG["training"]["weight_decay"])},
+        {'params': no_decay_params, 'weight_decay': 0.0}
+    ]
+
     try:
-        optimizer = torch.optim.AdamW(
-            model_q.parameters(), 
-            lr=lr, 
-            weight_decay=float(CONFIG["training"]["weight_decay"]), 
-            fused=True
-        )
-        if rank == 0: logger.info("✅ Fused AdamW activado.")
+        optimizer = torch.optim.AdamW(optim_groups, lr=lr, fused=True)
+        if rank == 0: logger.info("✅ Fused AdamW activado (Weight Decay excluido para biases/LN).")
     except Exception as e:
         if rank == 0: logger.warning(f"⚠️ Fused AdamW no soportado ({e}), usando fallback estándar.")
-        optimizer = torch.optim.AdamW(
-            model_q.parameters(), 
-            lr=lr, 
-            weight_decay=float(CONFIG["training"]["weight_decay"])
-        )
+        optimizer = torch.optim.AdamW(optim_groups, lr=lr)
     scaler = GradScaler(device.type, enabled=CONFIG["training"]["use_amp"])
 
     total_steps = CONFIG["training"]["epochs"] * math.ceil(len(train_loader) / CONFIG["training"]["grad_accum_steps"])
@@ -358,7 +364,7 @@ def main():
             }
             eval_model_base = ModelBase(
                 dim=CONFIG["moco"]["dim"],
-                predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 4096)
+                predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 1024)
             ).to(device)
             eval_model_base.load_state_dict(clean_model_q, strict=False)
 
