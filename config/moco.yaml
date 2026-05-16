@@ -36,12 +36,12 @@ moco:
   local_loss_weight: 0.25     # Reducido de 0.5: menos dominancia local, más estructura global
 
 paths:
-  dataset_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640"
-  eval_train_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
-  eval_val_root: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
-  # data_yaml: ruta al YAML del dataset YOLO. Permite que YOLOClassificationDataset
-  # lea los nombres de clase reales (campo 'names') en lugar de generarlos como placeholders.
-  data_yaml: "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/data.yaml"
+  dataset_root: "/kaggle/input/texturas-bases/TEXTURAS_BASES"
+  eval_train_root: "/kaggle/input/texturas-bases/TEXTURAS_BASES/train"
+  eval_val_root: "/kaggle/input/texturas-bases/TEXTURAS_BASES/val"
+  # Al dejar data_yaml vacío, el cargador usará automáticamente los nombres 
+  # de las carpetas (Frog_Leaf_Eye, bacterial_blight, etc.) como etiquetas.
+  data_yaml: ""
   checkpoint_path: "/kaggle/working/moco_checkpoint.pth"
   best_checkpoint_path: "/kaggle/working/moco_best_checkpoint.pth"
   encoder_export_path: "/kaggle/working/moco_encoder_ready.pth"
