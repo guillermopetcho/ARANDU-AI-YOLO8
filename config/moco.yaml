@@ -1,8 +1,8 @@
 training:
   exploitation_mode: False  # Reactivar AAC para que controle con los nuevos límites
   seed: 42
-  epochs: 5   # Mini-fase quirúrgica: 3-5 epochs máximo desde epoch 9-11
-  warmup_epochs: 2   # Rampa obligatoria para evitar colapso inicial
+  epochs: 100   # Run final largo
+  warmup_epochs: 5   # Rampa extendida para mayor estabilidad inicial
   final_lr_ratio: 0.1
   batch_size: 32
   grad_accum_steps: 4
@@ -11,17 +11,18 @@ training:
   weight_decay: 0.05  # Aumentado para ConvNeXt V2 (evita explosión de norma)
   grad_clip: 0.5
   use_amp: True
-  save_every: 1   # Guardar cada epoch en mini-fase para no perder el mejor
-  early_stopping_patience: 3  # Parar rápido si no mejora
+  save_every: 5   # Guardar cada 5 epochs en el run largo
+  early_stopping_patience: 15  # Mucha más paciencia
+  curriculum_epoch: 25 # Época donde se reintroducen los crops de 64x64
   # B-COMPILE FIX: desactivado por defecto para el smoke test.
   # Activar SOLO en el segundo run, después de validar estabilidad.
   use_compile: false
 
 moco:
   dim: 512
-  queue: 16384         # Cola recomendada para estabilidad de representación global
+  queue: 32768         # Cola doblada para 2xT4: mejora manifold y uniformidad
   momentum_start: 0.996
-  momentum_end: 0.9995
+  momentum_end: 0.999
   temp_start: 0.15     # Empezamos más alto (más repulsión) para forzar la separación inicial
   temp_end: 0.12       # τ mínimo: preservar estructura local
   temp_warmup_steps: 100
@@ -35,7 +36,7 @@ moco:
   local_crop_scale_min: 0.02  # escala mínima 64px (hardcodeado)
   local_crop_scale_max: 0.25  # escala máxima 96px (hardcodeado)
   local_crop_size: 96         # tamaño vista local mayor (hardcodeado)
-  local_loss_weight: 0.10     # Reducido de 0.25 para estabilizar inicio
+  local_loss_weight: 0.15     # Ligeramente mayor para extraer más detalles, seguro tras estabilización
 
 paths:
   dataset_root: "/kaggle/input/datasets/joaquinignaciopetcho/texturas-bases/TEXTURAS_BASES"

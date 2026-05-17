@@ -82,11 +82,10 @@ def get_local_transforms():
     
     # 4 vistas de 96x96 — capturan estructuras intermedias (bordes, manchas)
     t_96 = [_make_local_pipeline(96, (0.08, 0.25)) for _ in range(4)]
-    # TEMPORALMENTE DESACTIVADO PARA ESTABILIZAR EL PRIMER RUN
-    # 2 vistas de 64x64 — capturan micro-lesiones y texturas ultrafinas
-    # t_64 = [_make_local_pipeline(64, (0.02, 0.08)) for _ in range(2)]
+    # 1 crop de 64x64 — reintroducido para curriculum dinámico (época 25+)
+    t_64 = [_make_local_pipeline(64, (0.02, 0.08)) for _ in range(1)]
     
-    return t_96 # + t_64
+    return t_96 + t_64
 
 # ---------------------------------------------------------------------------
 # Dataset e Índices

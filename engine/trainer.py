@@ -49,6 +49,13 @@ class MoCoTrainer:
             # channels_last solo aplica a tensores 4D — se aplica por slice dentro del loop.
             v_q, v_k, local_crops = batch
             # local_crops es ahora una lista de tensores [ [B, C, H_i, W_i], ... ]
+            
+            # --- CURRICULUM DINÁMICO ---
+            curriculum_epoch = self.config['training'].get('curriculum_epoch', 25)
+            if epoch < curriculum_epoch and local_crops is not None:
+                # Ignorar crops muy pequeños (64x64) antes de la época de estabilización
+                local_crops = [crop for crop in local_crops if crop.shape[-1] >= 96]
+                
             if len(local_crops) > 0:
                 local_crops = [crop.to(self.device, non_blocking=True) for crop in local_crops]
             else:
