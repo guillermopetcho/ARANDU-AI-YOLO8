@@ -212,10 +212,10 @@ def build_dataloaders(CONFIG, is_distributed, rank):
         prefetch_factor=2 if n_workers > 0 else None
     )
 
+    # Resolución de eval: match cercano a la resolución de entrenamiento
+    eval_size = CONFIG["moco"].get("global_crop_size", 384)
     eval_transform = T.Compose([
-        # B-EVAL FIX: resolución elevada a 320px (match cercano a los 384 del entrenamiento SSL).
-        # Usar 224 introducía discrepancia de distribución en la evaluación KNN.
-        T.Resize(320), T.CenterCrop(320), T.ToTensor(),
+        T.Resize(eval_size), T.CenterCrop(eval_size), T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
     # Pasar el data_yaml para que YOLOClassificationDataset lea las clases reales
@@ -272,6 +272,30 @@ def build_model(CONFIG, is_distributed, device, rank, local_rank):
         if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d)):
             m.eval()
             m.track_running_stats = False
+
+    # === FREEZE PARCIAL DEL BACKBONE ===
+    # freeze_stages=2 congela las 2 primeras etapas del ConvNeXt (baja frecuencia).
+    # Las etapas profundas (semántica) siguen entrenando con el LR bajo.
+    freeze_stages = CONFIG["training"].get("freeze_stages", 0)
+    if freeze_stages > 0:
+        # Acceder al encoder real (desenvuelto de compile si aplica)
+        raw_encoder = model_q._orig_mod.encoder if hasattr(model_q, '_orig_mod') else model_q.encoder
+        # ConvNeXt en timm tiene: stem + stages[0..3]
+        modules_to_freeze = []
+        if hasattr(raw_encoder, 'stem'):
+            modules_to_freeze.append(raw_encoder.stem)
+        if hasattr(raw_encoder, 'stages'):
+            for i in range(min(freeze_stages, len(raw_encoder.stages))):
+                modules_to_freeze.append(raw_encoder.stages[i])
+        frozen_params = 0
+        for module in modules_to_freeze:
+            for p in module.parameters():
+                p.requires_grad = False
+                frozen_params += p.numel()
+        if rank == 0:
+            logger.info(f"🧊 Freeze parcial: {len(modules_to_freeze)} módulos, "
+                        f"{frozen_params/1e6:.1f}M parámetros congelados "
+                        f"(freeze_stages={freeze_stages}).")
 
     if is_distributed: model_q = nn.parallel.DistributedDataParallel(model_q, device_ids=[local_rank])
     queue = MoCoQueue(dim=CONFIG["moco"]["dim"], K=CONFIG["moco"]["queue"]).to(device)

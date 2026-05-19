@@ -1,0 +1,17 @@
+# =========================================================
+# ARANDU + YOLO CLASIFICACIÓN (Backbone SSL ConvNeXt V2 Tiny)
+# =========================================================
+# Este modelo usa el encoder SSL y termina directamente en un 
+# cabezal de clasificación. No genera bounding boxes.
+
+nc: 5  # healthy, mosaic, frog_eye, bacterial_blight, potassium_deficiency
+
+backbone:
+  # AranduYOLOClsWrapper devuelve solo el último feature map (P5), 
+  # que tiene el contexto global de la hoja (1024 canales).
+  - [-1, 1, AranduYOLOClsWrapper, []]
+
+head:
+  # Classify head aplica Global Average Pooling (GAP) y una capa lineal
+  # para predecir las 5 clases directamente.
+  - [-1, 1, Classify, [nc]]

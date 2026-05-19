@@ -46,14 +46,15 @@ def _make_shared_counter():
 # Data Augmentation (Multi-Crop Jerárquico)
 # ---------------------------------------------------------------------------
 
-def get_global_transforms():
-    """ 2 vistas globales de 384x384 para estructura foliar completa. """
-    # B2 FIX: crear instancias INDEPENDIENTES de transforms para t_q y t_k.
-    # ColorJitter y GaussianBlur son stateful — compartir instancias entre t_q/t_k
-    # puede causar que ambas vistas reciban los mismos parámetros aleatorios.
+def get_global_transforms(global_size=640):
+    """ 2 vistas globales de `global_size`x`global_size` para contexto foliar completo.
+    
+    Fase 1: 384px — texturas y micro-patrones.
+    Fase 2: 640px — hojas completas con contexto espacial.
+    """
     def _make_global_pipeline():
         return T.Compose([
-            T.RandomResizedCrop(384, scale=(0.65, 1.0)),
+            T.RandomResizedCrop(global_size, scale=(0.65, 1.0)),
             T.RandomHorizontalFlip(),
             T.RandomVerticalFlip(p=0.5),
             T.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.06, hue=0.02),
@@ -64,10 +65,13 @@ def get_global_transforms():
         ])
     return _make_global_pipeline(), _make_global_pipeline()
 
-def get_local_transforms():
-    """ 4 vistas locales (96x96) y 2 vistas ultra-locales (64x64). """
+def get_local_transforms(local_size=128, ultra_size=96):
+    """ 4 vistas locales (`local_size`) y 1 vista ultra-local (`ultra_size`).
     
-    # B2 FIX: cada llamada crea nuevas instancias independientes.
+    Fase 1: 96px / 64px — micro-lesiones en texturas.
+    Fase 2: 128px / 96px — región foliar con contexto sobre hoja completa.
+    """
+    
     def _make_local_pipeline(size, scale):
         return T.Compose([
             T.RandomResizedCrop(size, scale=scale),
@@ -80,12 +84,12 @@ def get_local_transforms():
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
     
-    # 4 vistas de 96x96 — capturan estructuras intermedias (bordes, manchas)
-    t_96 = [_make_local_pipeline(96, (0.08, 0.25)) for _ in range(4)]
-    # 1 crop de 64x64 — reintroducido para curriculum dinámico (época 25+)
-    t_64 = [_make_local_pipeline(64, (0.02, 0.08)) for _ in range(1)]
+    # 4 vistas del tamaño local principal (128px en Fase 2, 96px en Fase 1)
+    t_local = [_make_local_pipeline(local_size, (0.08, 0.35)) for _ in range(4)]
+    # 1 vista ultra-local para micro-patrones (96px en Fase 2, 64px en Fase 1)
+    t_ultra = [_make_local_pipeline(ultra_size, (0.04, 0.12)) for _ in range(1)]
     
-    return t_96 + t_64
+    return t_local + t_ultra
 
 # ---------------------------------------------------------------------------
 # Dataset e Índices
@@ -94,8 +98,13 @@ def get_local_transforms():
 class MoCoDataset(Dataset):
     def __init__(self, paths, moco_config=None):
         self.paths = paths
-        self.t_q, self.t_k = get_global_transforms()
-        self.local_transforms = get_local_transforms()
+        cfg = moco_config or {}
+        # Resolución config-driven: Fase 1=384px, Fase 2=640px
+        global_size = cfg.get('global_crop_size', 640)
+        local_size  = cfg.get('local_crop_size', 128)
+        ultra_size  = int(local_size * 0.75)  # Ultra = 75% del tamaño local
+        self.t_q, self.t_k = get_global_transforms(global_size=global_size)
+        self.local_transforms = get_local_transforms(local_size=local_size, ultra_size=ultra_size)
         self._load_errors = _make_shared_counter()
         self.logger = logging.getLogger("AranduSSL")
 

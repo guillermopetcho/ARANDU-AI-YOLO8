@@ -1,21 +1,21 @@
 training:
-  exploitation_mode: False  # Reactivar AAC para que controle con los nuevos límites
+  exploitation_mode: False
   seed: 42
-  epochs: 100   # Run final largo
-  warmup_epochs: 5   # Rampa extendida para mayor estabilidad inicial
-  final_lr_ratio: 0.1
-  batch_size: 32
-  grad_accum_steps: 4
+  # === FASE 2.1: Refinamiento a 512px con freeze parcial ===
+  epochs: 20
+  warmup_epochs: 1   # Mínimo: el manifold ya está cristalizado
+  final_lr_ratio: 0.2  # No bajar tanto el LR al final — queremos seguir aprendiendo
+  batch_size: 16   # 512px: cabe bien en T4 con AMP
+  grad_accum_steps: 8   # EffBatch = 16 × 8 × 2 GPUs = 256
   num_workers: 4
-  lr_base: 0.0005  # LR más seguro para estabilización
-  weight_decay: 0.05  # Aumentado para ConvNeXt V2 (evita explosión de norma)
-  grad_clip: 0.5
+  lr_base: 0.00002  # 2e-5: muy conservador, refinamiento fino
+  weight_decay: 0.05
+  grad_clip: 0.3    # Más restrictivo: no queremos perturbaciones grandes
   use_amp: True
-  save_every: 5   # Guardar cada 5 epochs en el run largo
-  early_stopping_patience: 15  # Mucha más paciencia
-  curriculum_epoch: 25 # Época donde se reintroducen los crops de 64x64
-  # B-COMPILE FIX: desactivado por defecto para el smoke test.
-  # Activar SOLO en el segundo run, después de validar estabilidad.
+  save_every: 1     # Guardar cada epoch: la ventana de mejora es estrecha
+  early_stopping_patience: 7
+  curriculum_epoch: 0  # Todos los crops activos
+  freeze_stages: 2  # Congelar primeras 2 etapas del ConvNeXt (capas bajas ya aprendidas)
   use_compile: false
 
 moco:
@@ -23,33 +23,32 @@ moco:
   queue: 32768         # Cola doblada para 2xT4: mejora manifold y uniformidad
   momentum_start: 0.996
   momentum_end: 0.999
-  temp_start: 0.15     # Empezamos más alto (más repulsión) para forzar la separación inicial
-  temp_end: 0.12       # τ mínimo: preservar estructura local
-  temp_warmup_steps: 100
-  # MoCo v3: Predictor MLP (cabeza de predicción para queries solamente)
-  predictor_hidden_dim: 1024  # 512→1024→512 (diseño original). 4096 cuadriplicaba VRAM innecesariamente.
-  # Multi-Crop DINO-style: Vistas locales adicionales de alta granularidad
-  # NOTA: Los siguientes parámetros son INFORMATIVOS (documentación de la arquitectura).
-  # La implementación actual los hardcodea en models/moco.py::get_local_transforms().
-  # Se mantienen aquí para referencia y futura refactorización a config-driven.
-  num_local_crops: 4          # 4×96px + 2×64px (hardcodeado)
-  local_crop_scale_min: 0.02  # escala mínima 64px (hardcodeado)
-  local_crop_scale_max: 0.25  # escala máxima 96px (hardcodeado)
-  local_crop_size: 96         # tamaño vista local mayor (hardcodeado)
-  local_loss_weight: 0.15     # Ligeramente mayor para extraer más detalles, seguro tras estabilización
+  temp_start: 0.12     # Empezamos con la temperatura final de Fase 1
+  temp_end: 0.10       # Baja levemente: espacio latente ya maduro
+  temp_warmup_steps: 50
+  predictor_hidden_dim: 1024
+  # Fase 2.1: Resolución 512px — contexto foliar intermedio
+  global_crop_size: 512   # Fase 1=384 → Fase 2.1=512 → Fase 2.2=640
+  # Crops locales proporcionales a la resolución global
+  num_local_crops: 4
+  local_crop_scale_min: 0.10
+  local_crop_scale_max: 0.35
+  local_crop_size: 112        # ~22% de 512px: proporcional a 96px sobre 384px
+  local_loss_weight: 0.20     # Peso local aumentado: más importancia a patrones locales reales
 
-paths:
-  dataset_root: "/kaggle/input/datasets/joaquinignaciopetcho/texturas-bases/TEXTURAS_BASES"
-  eval_train_root: "/kaggle/input/datasets/joaquinignaciopetcho/texturas-bases/TEXTURAS_BASES/train"
-  eval_val_root: "/kaggle/input/datasets/joaquinignaciopetcho/texturas-bases/TEXTURAS_BASES/val"
-  # Al dejar data_yaml vacío, el cargador usará automáticamente los nombres 
-  # de las carpetas (Frog_Leaf_Eye, bacterial_blight, etc.) como etiquetas.
+  # === FASE 2: Dataset de hojas completas ===
+  # Actualizar estas rutas con el dataset de hojas completas en Kaggle
+  dataset_root: "/kaggle/input/TU_DATASET_FASE2/train"
+  eval_train_root: "/kaggle/input/TU_DATASET_FASE2/train"
+  eval_val_root: "/kaggle/input/TU_DATASET_FASE2/val"
   data_yaml: ""
-  checkpoint_path: "/kaggle/working/moco_checkpoint.pth"
-  best_checkpoint_path: "/kaggle/working/moco_best_checkpoint.pth"
-  encoder_export_path: "/kaggle/working/moco_encoder_ready.pth"
-  metrics_path: "/kaggle/working/ssl_metrics.json"
-  index_cache_path: "/kaggle/working/train_index.npy"
+  # === Checkpoints: cargar el best de Fase 1 ===
+  resume_checkpoint: "/kaggle/input/TU_OUTPUT_FASE1/moco_best_checkpoint.pth"  # ENCODER FASE 1
+  checkpoint_path: "/kaggle/working/moco_fase2_checkpoint.pth"
+  best_checkpoint_path: "/kaggle/working/moco_fase2_best.pth"
+  encoder_export_path: "/kaggle/working/moco_encoder_fase2_ready.pth"
+  metrics_path: "/kaggle/working/ssl_fase2_metrics.json"
+  index_cache_path: "/kaggle/working/train_fase2_index.npy"
 
 eval:
   subset_size: 1000
