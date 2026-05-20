@@ -319,12 +319,16 @@ class AranduBackbone(nn.Module):
 
         # Paso 3: Descongelar stages según la fase
         if phase >= 2:
-            for p in self.backbone.stages[3].parameters():
-                p.requires_grad = True  # stage3 → P5 (768ch)
+            if hasattr(self.backbone, 'stages_3'):
+                for p in self.backbone.stages_3.parameters(): p.requires_grad = True
+            elif hasattr(self.backbone, 'stages'):
+                for p in self.backbone.stages[3].parameters(): p.requires_grad = True
 
         if phase >= 3:
-            for p in self.backbone.stages[2].parameters():
-                p.requires_grad = True  # stage2 → P4 (384ch)
+            if hasattr(self.backbone, 'stages_2'):
+                for p in self.backbone.stages_2.parameters(): p.requires_grad = True
+            elif hasattr(self.backbone, 'stages'):
+                for p in self.backbone.stages[2].parameters(): p.requires_grad = True
 
         if phase >= 4:
             for p in self.backbone.parameters():
