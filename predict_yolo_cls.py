@@ -12,6 +12,7 @@ import csv
 import logging
 from ultralytics import YOLO
 import ultralytics.nn.modules as nn_modules
+import ultralytics.nn.tasks as nn_tasks
 
 from models.yolo_wrapper import AranduBackbone
 
@@ -39,6 +40,8 @@ def register_cls_backbone(encoder_path: str):
 
     setattr(nn_modules, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
+    setattr(nn_tasks, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
+    setattr(sys.modules['ultralytics.nn.tasks'], 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
 
 
 def main(args):
