@@ -78,8 +78,8 @@ def train(args):
     # Registramos el modelo en Ultralytics
     register_cls_backbone(args.encoder)
     
-    # Cargamos la arquitectura que definimos en yaml
-    model = YOLO("arandu_yolo_cls.yaml")
+    # Cargamos la arquitectura que definimos en yaml y forzamos la tarea
+    model = YOLO("arandu_yolo_cls.yaml", task="classify")
 
     # Entrenamos
     results = model.train(

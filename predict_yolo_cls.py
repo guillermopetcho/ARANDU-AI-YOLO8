@@ -58,9 +58,9 @@ def main(args):
     # 1. Registrar la arquitectura personalizada
     register_cls_backbone(args.encoder)
     
-    # 2. Cargar el modelo entrenado
+    # 2. Cargar el modelo entrenado y forzar la tarea
     logger.info(f"Cargando modelo YOLO: {args.weights}")
-    model = YOLO(args.weights)
+    model = YOLO(args.weights, task="classify")
 
     logger.info(f"Iniciando predicciones sobre la carpeta: {args.source}")
     
