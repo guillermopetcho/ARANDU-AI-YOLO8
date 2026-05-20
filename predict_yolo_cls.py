@@ -61,8 +61,8 @@ def main(args):
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         
-        # Las clases exactas para las columnas de porcentajes
-        clases_esperadas = ['healthy', 'mosaic', 'frog_eye', 'bacterial_blight', 'potassium_deficiency']
+        # Las clases exactas detectadas automáticamente del modelo
+        clases_esperadas = list(model.names.values())
         
         # Escribir encabezados exactamente como en la imagen
         encabezados = ['Nombre de imagen', 'Clase'] + clases_esperadas

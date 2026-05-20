@@ -4,7 +4,7 @@
 # Este modelo usa el encoder SSL y termina directamente en un 
 # cabezal de clasificación. No genera bounding boxes.
 
-nc: 5  # healthy, mosaic, frog_eye, bacterial_blight, potassium_deficiency
+nc: 3  # dataset de prueba: healthy, mosaic, frog_eye
 
 backbone:
   # AranduYOLOClsWrapper devuelve solo el último feature map (P5), 
