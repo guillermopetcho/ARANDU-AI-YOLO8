@@ -44,8 +44,9 @@ def register_cls_backbone(encoder_path: str):
             return features[-1] 
 
     class AranduClassify(Classify):
-        def __init__(self, c1, c2, *args, **kwargs):
-            # Forzamos c1=1024 porque parse_model erróneamente arrastra el 3 de la imagen original
+        def __init__(self, c2, *args, **kwargs):
+            # parse_model de YOLO solo pasa [nc] para módulos custom, por lo que c2 asume ese valor.
+            # Inyectamos c1=1024 manualmente para ConvNeXt-V2-Tiny.
             super().__init__(1024, c2, *args, **kwargs)
 
     setattr(nn_modules, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)

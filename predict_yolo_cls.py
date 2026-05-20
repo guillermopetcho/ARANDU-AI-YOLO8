@@ -40,7 +40,7 @@ def register_cls_backbone(encoder_path: str):
             return features[-1] 
 
     class AranduClassify(Classify):
-        def __init__(self, c1, c2, *args, **kwargs):
+        def __init__(self, c2, *args, **kwargs):
             super().__init__(1024, c2, *args, **kwargs)
 
     setattr(nn_modules, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
