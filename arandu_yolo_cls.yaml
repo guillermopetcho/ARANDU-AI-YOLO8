@@ -12,6 +12,6 @@ backbone:
   - [-1, 1, AranduYOLOClsWrapper, []]
 
 head:
-  # Classify head aplica Global Average Pooling (GAP) y una capa lineal
-  # para predecir las 5 clases directamente.
-  - [-1, 1, Classify, [nc]]
+  # AranduClassify aplica Global Average Pooling (GAP) y una capa lineal
+  # interceptando el tamaño de los canales correctamente (1024).
+  - [-1, 1, AranduClassify, [nc]]
