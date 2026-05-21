@@ -185,7 +185,7 @@ def resolve_kaggle_paths(paths_config, rank=0):
     return patched
 
 
-def make_eval_subset_loader(eval_ds, subset_size: int, num_workers: int) -> DataLoader:
+def make_eval_subset_loader(eval_ds, subset_size: int, num_workers: int, batch_size: int = 32) -> DataLoader:
     """Crea un DataLoader con un subconjunto aleatorio del dataset de evaluación.
 
     Cada llamada genera un nuevo subconjunto independiente, permitiendo
@@ -193,7 +193,7 @@ def make_eval_subset_loader(eval_ds, subset_size: int, num_workers: int) -> Data
     """
     indices = torch.randperm(len(eval_ds))[:min(subset_size, len(eval_ds))].tolist()
     return DataLoader(
-        Subset(eval_ds, indices), batch_size=128,
+        Subset(eval_ds, indices), batch_size=batch_size,
         num_workers=num_workers, pin_memory=True
     )
 
@@ -224,9 +224,11 @@ def build_dataloaders(CONFIG, is_distributed, rank):
     val_ds = build_eval_dataset(CONFIG["paths"]["eval_val_root"], transform=eval_transform, data_yaml_path=data_yaml)
 
     eval_workers = min(2, n_workers)
+    eval_batch_size = max(CONFIG["training"]["batch_size"], 32) # Safe batch size for eval
+    
     # C3 FIX: Usar make_eval_subset_loader() para permitir rerandomización periódica.
-    eval_train_loader = make_eval_subset_loader(eval_ds, CONFIG["eval"]["subset_size"], eval_workers)
-    eval_val_loader = DataLoader(val_ds, batch_size=128, num_workers=eval_workers, pin_memory=True)
+    eval_train_loader = make_eval_subset_loader(eval_ds, CONFIG["eval"]["subset_size"], eval_workers, eval_batch_size)
+    eval_val_loader = DataLoader(val_ds, batch_size=eval_batch_size, num_workers=eval_workers, pin_memory=True)
 
     return train_loader, eval_train_loader, eval_val_loader, eval_ds, val_ds
 
