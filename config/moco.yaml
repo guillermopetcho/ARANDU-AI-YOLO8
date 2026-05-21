@@ -39,9 +39,9 @@ moco:
 paths:
   # === FASE 2: Dataset de hojas completas ===
   # Actualizar estas rutas con el dataset de hojas completas en Kaggle
-  dataset_root: "/kaggle/input/TU_DATASET_FASE2/train"
-  eval_train_root: "/kaggle/input/TU_DATASET_FASE2/train"
-  eval_val_root: "/kaggle/input/TU_DATASET_FASE2/val"
+  dataset_root: "/kaggle/input/datasets/joaquinignaciopetcho/textura-base-correcta/train"
+  eval_train_root: "/kaggle/input/datasets/joaquinignaciopetcho/textura-base-correcta/train"
+  eval_val_root: "/kaggle/input/datasets/joaquinignaciopetcho/textura-base-correcta/val"
   data_yaml: ""
   # === Checkpoints: cargar el best de Fase 1 ===
   resume_checkpoint: "/kaggle/input/TU_OUTPUT_FASE1/moco_best_checkpoint.pth"  # ENCODER FASE 1
