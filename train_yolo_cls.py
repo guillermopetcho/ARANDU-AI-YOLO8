@@ -83,12 +83,14 @@ def train(args):
     if args.stage == "lp":
         freeze_phase = 3
         default_lr = 0.01
+        opt_to_use = "SGD"
         run_name = "Arandu_Clasificacion_LP"
         model_init = "arandu_yolo_cls.yaml"
         logger.info("▶ FASE 1: LINEAR PROBING. Backbone congelado. Entrenando solo el cabezal...")
     else:
         freeze_phase = 4
         default_lr = 0.0001
+        opt_to_use = "AdamW"
         run_name = "Arandu_Clasificacion_FT"
         if not args.weights:
             raise ValueError("Para Full Fine-Tuning (--stage ft) debes proveer --weights apuntando al best.pt de la fase LP.")
@@ -111,7 +113,7 @@ def train(args):
         batch     = args.batch,
         lr0       = lr_to_use,       # LR automático o manual
         lrf       = 0.01,
-        optimizer = "AdamW",
+        optimizer = opt_to_use,      # SGD para LP, AdamW para FT
         amp       = True,
         patience  = 20,
         project   = args.project,
