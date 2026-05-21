@@ -36,6 +36,7 @@ moco:
   local_crop_size: 112        # ~22% de 512px: proporcional a 96px sobre 384px
   local_loss_weight: 0.20     # Peso local aumentado: más importancia a patrones locales reales
 
+paths:
   # === FASE 2: Dataset de hojas completas ===
   # Actualizar estas rutas con el dataset de hojas completas en Kaggle
   dataset_root: "/kaggle/input/TU_DATASET_FASE2/train"
