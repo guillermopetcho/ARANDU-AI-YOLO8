@@ -68,6 +68,12 @@ def main(args):
     logger.info(f"Cargando modelo YOLO: {args.weights}")
     model = YOLO(args.weights, task="classify")
 
+    if args.mode == "val":
+        logger.info(f"Ejecutando validación oficial de Ultralytics sobre: {args.source}")
+        metrics = model.val(data=args.source, imgsz=args.imgsz)
+        logger.info(f"🚀 Precisión Top-1 real medida: {metrics.top1 * 100:.2f}%")
+        return
+
     logger.info(f"Iniciando predicciones sobre la carpeta: {args.source}")
     
     # 3. Lanzar inferencia. stream=True optimiza la memoria para miles de imágenes
@@ -119,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--encoder", required=True, help="Ruta original al moco_encoder_ready.pth (necesario para armar la red)")
     parser.add_argument("--output",  default="resultados_clasificacion.csv", help="Nombre del archivo CSV generado")
     parser.add_argument("--imgsz",   type=int, default=224, help="Debe coincidir con el tamaño de entrenamiento (224).")
+    parser.add_argument("--mode",    choices=["predict", "val"], default="predict", help="'predict' para CSV, 'val' para evaluar métricas.")
     
     args = parser.parse_args()
     main(args)
