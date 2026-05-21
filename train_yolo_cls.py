@@ -133,7 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("--weights", type=str, default="", help="Ruta al best.pt de la fase LP (requerido para stage 'ft').")
     parser.add_argument("--epochs",  type=int, default=100, help="Épocas de fine-tuning.")
     parser.add_argument("--batch",   type=int, default=32)
-    parser.add_argument("--imgsz",   type=int, default=512)
+    parser.add_argument("--imgsz",   type=int, default=224, help="224 es el estándar nativo para MoCo y ConvNeXt.")
     parser.add_argument("--lr",      type=float, default=None, help="Si se omite, usa 0.01 en 'lp' y 0.0001 en 'ft'.")
     parser.add_argument("--project", type=str, default="AranduYOLO_runs")
     args = parser.parse_args()
