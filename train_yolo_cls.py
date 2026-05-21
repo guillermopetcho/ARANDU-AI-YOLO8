@@ -22,32 +22,32 @@ logger = logging.getLogger("AranduYOLOCls")
 # ---------------------------------------------------------------------------
 # Wrapper de Clasificación
 # ---------------------------------------------------------------------------
+_ENCODER_PATH = None
+
+class AranduYOLOClsWrapper(AranduBackbone):
+    def __init__(self, *args, **kwargs):
+        global _ENCODER_PATH
+        super().__init__(
+            moco_checkpoint_path=_ENCODER_PATH,
+            freeze_phase=3,
+            use_coord_attn=False
+        )
+
+    def forward(self, x):
+        features = super().forward(x)
+        return features[-1] 
+
+class AranduClassify(Classify):
+    def __init__(self, c2, *args, **kwargs):
+        super().__init__(1024, c2, *args, **kwargs)
+
 def register_cls_backbone(encoder_path: str):
     """
-    Registra AranduYOLOClsWrapper. 
-    A diferencia del wrapper de detección, este SOLO devuelve el último mapa de características (P5).
-    El cabezal Classify de YOLO espera un solo tensor, no una lista.
+    Registra AranduYOLOClsWrapper en Ultralytics de forma dinámica.
+    Las clases se definen de manera global para que 'torch.save' pueda serializarlas (pickle).
     """
-    class AranduYOLOClsWrapper(AranduBackbone):
-        def __init__(self, *args, **kwargs):
-            # Ignoramos los args posicionales (c1, c2) que Ultralytics podría intentar inyectar
-            super().__init__(
-                moco_checkpoint_path=encoder_path,
-                freeze_phase=3,
-                use_coord_attn=False
-            )
-
-        def forward(self, x):
-            # AranduBackbone devuelve [P2, P3, P4, P5]. 
-            # Para clasificación, YOLO espera el feature map más profundo (P5).
-            features = super().forward(x)
-            return features[-1] 
-
-    class AranduClassify(Classify):
-        def __init__(self, c2, *args, **kwargs):
-            # parse_model de YOLO solo pasa [nc] para módulos custom, por lo que c2 asume ese valor.
-            # Inyectamos c1=1024 manualmente para ConvNeXt-V2-Tiny.
-            super().__init__(1024, c2, *args, **kwargs)
+    global _ENCODER_PATH
+    _ENCODER_PATH = encoder_path
 
     setattr(nn_modules, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
