@@ -29,7 +29,7 @@ class AranduYOLOClsWrapper(AranduBackbone):
         global _ENCODER_PATH
         super().__init__(
             moco_checkpoint_path=_ENCODER_PATH,
-            freeze_phase=3,
+            freeze_phase=4,  # Fase 4: Full fine-tuning para que toda la red aprenda
             use_coord_attn=False
         )
 
@@ -88,10 +88,11 @@ def train(args):
         epochs    = args.epochs,
         imgsz     = args.imgsz,
         batch     = args.batch,
-        lr0       = args.lr,         # LR más bajo porque el encoder ya sabe mucho
-        lrf       = 0.1,
+        lr0       = args.lr,         # LR ajustado
+        lrf       = 0.01,            # Factor final del LR (menor para asentar los pesos)
         optimizer = "AdamW",
         amp       = True,
+        patience  = 20,              # Early stopping si no mejora
         project   = args.project,
         name      = "Arandu_Clasificacion",
         seed      = 42,
@@ -105,10 +106,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data",    required=True, help="Carpeta raíz del dataset (debe contener train/ y val/).")
     parser.add_argument("--encoder", required=True, help="Ruta al moco_encoder_ready.pth.")
-    parser.add_argument("--epochs",  type=int, default=30, help="Épocas de fine-tuning.")
+    parser.add_argument("--epochs",  type=int, default=100, help="Épocas de fine-tuning.")
     parser.add_argument("--batch",   type=int, default=32)
     parser.add_argument("--imgsz",   type=int, default=512)
-    parser.add_argument("--lr",      type=float, default=0.0001)
+    parser.add_argument("--lr",      type=float, default=0.001)
     parser.add_argument("--project", type=str, default="AranduYOLO_runs")
     args = parser.parse_args()
     train(args)

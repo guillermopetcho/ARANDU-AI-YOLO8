@@ -27,7 +27,7 @@ class AranduYOLOClsWrapper(AranduBackbone):
         global _ENCODER_PATH
         super().__init__(
             moco_checkpoint_path=_ENCODER_PATH,
-            freeze_phase=3,
+            freeze_phase=4,  # Actualizado para coincidir con el entrenamiento
             use_coord_attn=False
         )
 
