@@ -118,7 +118,7 @@ if __name__ == "__main__":
     parser.add_argument("--source",  required=True, help="Ruta a la carpeta con las imágenes sin clasificar")
     parser.add_argument("--encoder", required=True, help="Ruta original al moco_encoder_ready.pth (necesario para armar la red)")
     parser.add_argument("--output",  default="resultados_clasificacion.csv", help="Nombre del archivo CSV generado")
-    parser.add_argument("--imgsz",   type=int, default=512)
+    parser.add_argument("--imgsz",   type=int, default=224, help="Debe coincidir con el tamaño de entrenamiento (224).")
     
     args = parser.parse_args()
     main(args)
