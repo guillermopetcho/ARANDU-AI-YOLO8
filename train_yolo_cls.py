@@ -23,13 +23,14 @@ logger = logging.getLogger("AranduYOLOCls")
 # Wrapper de Clasificación
 # ---------------------------------------------------------------------------
 _ENCODER_PATH = None
+_FREEZE_PHASE = 3
 
 class AranduYOLOClsWrapper(AranduBackbone):
     def __init__(self, *args, **kwargs):
-        global _ENCODER_PATH
+        global _ENCODER_PATH, _FREEZE_PHASE
         super().__init__(
             moco_checkpoint_path=_ENCODER_PATH,
-            freeze_phase=4,  # Fase 4: Full fine-tuning para que toda la red aprenda
+            freeze_phase=_FREEZE_PHASE,
             use_coord_attn=False
         )
 
@@ -41,13 +42,14 @@ class AranduClassify(Classify):
     def __init__(self, c2, *args, **kwargs):
         super().__init__(1024, c2, *args, **kwargs)
 
-def register_cls_backbone(encoder_path: str):
+def register_cls_backbone(encoder_path: str, freeze_phase: int = 3):
     """
     Registra AranduYOLOClsWrapper en Ultralytics de forma dinámica.
     Las clases se definen de manera global para que 'torch.save' pueda serializarlas (pickle).
     """
-    global _ENCODER_PATH
+    global _ENCODER_PATH, _FREEZE_PHASE
     _ENCODER_PATH = encoder_path
+    _FREEZE_PHASE = freeze_phase
 
     setattr(nn_modules, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
@@ -74,42 +76,63 @@ def train(args):
     logger.info("🌱 ARANDU-AI YOLO — CLASIFICACIÓN SSL")
     logger.info(f"   Dataset (Carpetas): {args.data}")
     logger.info(f"   Encoder SSL       : {args.encoder}")
+    logger.info(f"   Estrategia        : {args.stage.upper()}")
     logger.info("=" * 60)
 
+    # Configuración inteligente según la etapa
+    if args.stage == "lp":
+        freeze_phase = 3
+        default_lr = 0.01
+        run_name = "Arandu_Clasificacion_LP"
+        model_init = "arandu_yolo_cls.yaml"
+        logger.info("▶ FASE 1: LINEAR PROBING. Backbone congelado. Entrenando solo el cabezal...")
+    else:
+        freeze_phase = 4
+        default_lr = 0.0001
+        run_name = "Arandu_Clasificacion_FT"
+        if not args.weights:
+            raise ValueError("Para Full Fine-Tuning (--stage ft) debes proveer --weights apuntando al best.pt de la fase LP.")
+        model_init = args.weights
+        logger.info("▶ FASE 2: FULL FINE-TUNING. Todo descongelado. Ajuste fino de pesos...")
+
+    lr_to_use = args.lr if args.lr is not None else default_lr
+
     # Registramos el modelo en Ultralytics
-    register_cls_backbone(args.encoder)
+    register_cls_backbone(args.encoder, freeze_phase)
     
-    # Cargamos la arquitectura que definimos en yaml y forzamos la tarea
-    model = YOLO("arandu_yolo_cls.yaml", task="classify")
+    # Cargamos la arquitectura o los pesos según la fase
+    model = YOLO(model_init, task="classify")
 
     # Entrenamos
     results = model.train(
-        data      = args.data,       # Ruta a la carpeta que contiene train/ y val/
+        data      = args.data,
         epochs    = args.epochs,
         imgsz     = args.imgsz,
         batch     = args.batch,
-        lr0       = args.lr,         # LR ajustado
-        lrf       = 0.01,            # Factor final del LR (menor para asentar los pesos)
+        lr0       = lr_to_use,       # LR automático o manual
+        lrf       = 0.01,
         optimizer = "AdamW",
         amp       = True,
-        patience  = 20,              # Early stopping si no mejora
+        patience  = 20,
         project   = args.project,
-        name      = "Arandu_Clasificacion",
+        name      = run_name,
         seed      = 42,
         exist_ok  = True
     )
 
-    best_model = os.path.join(args.project, "Arandu_Clasificacion", "weights", "best.pt")
-    logger.info(f"\n✅ Clasificación completada. Mejor modelo en: {best_model}")
+    best_model = os.path.join(args.project, run_name, "weights", "best.pt")
+    logger.info(f"\n✅ Etapa {args.stage.upper()} completada. Mejor modelo en: {best_model}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data",    required=True, help="Carpeta raíz del dataset (debe contener train/ y val/).")
     parser.add_argument("--encoder", required=True, help="Ruta al moco_encoder_ready.pth.")
+    parser.add_argument("--stage",   type=str, choices=["lp", "ft"], default="lp", help="Etapa: 'lp' (Linear Probing) o 'ft' (Fine-Tuning)")
+    parser.add_argument("--weights", type=str, default="", help="Ruta al best.pt de la fase LP (requerido para stage 'ft').")
     parser.add_argument("--epochs",  type=int, default=100, help="Épocas de fine-tuning.")
     parser.add_argument("--batch",   type=int, default=32)
     parser.add_argument("--imgsz",   type=int, default=512)
-    parser.add_argument("--lr",      type=float, default=0.001)
+    parser.add_argument("--lr",      type=float, default=None, help="Si se omite, usa 0.01 en 'lp' y 0.0001 en 'ft'.")
     parser.add_argument("--project", type=str, default="AranduYOLO_runs")
     args = parser.parse_args()
     train(args)
