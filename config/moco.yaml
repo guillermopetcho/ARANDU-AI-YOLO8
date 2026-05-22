@@ -15,7 +15,7 @@ training:
   save_every: 1     # Guardar cada epoch: la ventana de mejora es estrecha
   early_stopping_patience: 7
   curriculum_epoch: 0  # Todos los crops activos
-  freeze_stages: 2  # Congelar primeras 2 etapas del ConvNeXt (capas bajas ya aprendidas)
+  freeze_stages: 0  # FASE 1: NO congelar nada, entrenar desde cero
   use_compile: false
 
 moco:
@@ -27,14 +27,14 @@ moco:
   temp_end: 0.10       # Baja levemente: espacio latente ya maduro
   temp_warmup_steps: 50
   predictor_hidden_dim: 1024
-  # Fase 2.1: Resolución 512px — contexto foliar intermedio
-  global_crop_size: 512   # Fase 1=384 → Fase 2.1=512 → Fase 2.2=640
+  # Fase 1: Resolución 384px
+  global_crop_size: 384   
   # Crops locales proporcionales a la resolución global
   num_local_crops: 4
   local_crop_scale_min: 0.10
   local_crop_scale_max: 0.35
-  local_crop_size: 112        # ~22% de 512px: proporcional a 96px sobre 384px
-  local_loss_weight: 0.20     # Peso local aumentado: más importancia a patrones locales reales
+  local_crop_size: 96        
+  local_loss_weight: 0.20     
 
 paths:
   # === FASE 2: Dataset de hojas completas ===
