@@ -71,8 +71,6 @@ def get_latest_valid_checkpoint(paths_dict: dict) -> "str | None":
             candidates.append(p)
 
     base_dir = os.path.dirname(paths_dict.get("checkpoint_path", "/kaggle/working"))
-    if os.path.isdir(base_dir):
-        candidates.extend(glob.glob(os.path.join(base_dir, "*.pth")))
 
     valid_ckpts = []
     for p in set(candidates):
