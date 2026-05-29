@@ -1,11 +1,11 @@
 training:
   exploitation_mode: False
   seed: 42
-  # === FASE 2.1: Refinamiento a 512px con freeze parcial ===
+  # === FASE 1: Entrenamiento desde cero a 384px ===
   epochs: 20
-  warmup_epochs: 1   # Mínimo: el manifold ya está cristalizado
-  final_lr_ratio: 0.2  # No bajar tanto el LR al final — queremos seguir aprendiendo
-  batch_size: 16   # 512px: cabe bien en T4 con AMP
+  warmup_epochs: 2   # Fase 1 desde cero: necesita más warmup que un refinamiento
+  final_lr_ratio: 0.1  # Bajar bastante el LR al final para cristalizar bien
+  batch_size: 16   # 384px: cabe bien en T4 con AMP
   grad_accum_steps: 8   # EffBatch = 16 × 8 × 2 GPUs = 256
   num_workers: 4
   lr_base: 0.00002  # 2e-5: muy conservador, refinamiento fino
@@ -34,7 +34,37 @@ moco:
   local_crop_scale_min: 0.10
   local_crop_scale_max: 0.35
   local_crop_size: 96        
-  local_loss_weight: 0.20     
+  local_loss_weight: 0.20
+
+  # === AUGMENTATION (domain-specific para patología foliar de soja) ===
+  # Todos los valores son leídos por MoCoDataset y pasados a get_global/local_transforms().
+  augmentation:
+    # --- Color ---
+    # hue: rotación de matiz. CRÍTICO mantener bajo.
+    #   mosaic           → moteado verde/amarillo  (color clave)
+    #   potassium_deficiency → amarillamiento marginal (color clave)
+    #   frog_eye         → manchas marrón con halo pálido (color clave)
+    # hue=0.02 ≈ ±7° en el círculo cromático: invisible al ojo, inocuo para el encoder.
+    hue: 0.02
+
+    # grayscale_p: probabilidad de convertir a escala de grises.
+    # Las 5 clases tienen señal diagnóstica en color → p muy baja.
+    grayscale_p: 0.05
+
+    # --- Blur (vistas globales 384px) ---
+    # Simula variación de distancia cámara-hoja y desfoque óptico.
+    # kernel fijo en 11 (≈384/35). p reducida vs. MoCo original (0.5→0.4).
+    global_blur_p: 0.40
+
+    # --- Rotación (vistas globales) ---
+    # Hojas y texturas son isótropas: no existe orientación canónica.
+    # ±15° es suficiente sin perder contexto morfológico.
+    global_rotation_p: 0.30
+
+    # --- Blur (vistas locales 96px) ---
+    # kernel dinámico (≈ size/13 | 1, mínimo 3).
+    # p reducida: los crops locales muestran micro-lesiones → no blur agresivo.
+    local_blur_p: 0.30
 
 paths:
   # === FASE 1: Entrenamiento desde cero ===
@@ -57,7 +87,7 @@ eval:
   # el fallback hardcodeado de 25 en evaluation/linear_probe.py.
   # Ahora es configurable sin tocar el código fuente.
   linear_probe_epochs: 25
-  linear_probe_batch_size: 256  # Tamaño de batch para la sonda lineal post-SSL
+  linear_probe_batch_size: 32  # Reducido de 256 a 32 para evitar OOM
 
 wandb:
   enabled: true

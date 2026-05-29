@@ -46,49 +46,83 @@ def _make_shared_counter():
 # Data Augmentation (Multi-Crop Jerárquico)
 # ---------------------------------------------------------------------------
 
-def get_global_transforms(global_size=640):
+def get_global_transforms(global_size=640, aug_cfg=None):
     """ 2 vistas globales de `global_size`x`global_size` para contexto foliar completo.
-    
+
     Fase 1: 384px — texturas y micro-patrones.
     Fase 2: 640px — hojas completas con contexto espacial.
+
+    Parametros de augmentation (aug_cfg, leídos del YAML):
+      - hue            : Rotación de matiz. MUY BAJO (≤0.02) — el color es señal diagnóstica
+                         (potassium_deficiency=amarillo, mosaic=moteado).
+      - grayscale_p    : P(convertir a gris). MÍNIMO (≤0.05) — no destruir firma cromática.
+      - global_blur_p  : P(GaussianBlur) en vistas globales. Simula variación de distancia.
+      - global_rotation_p: P(RandomRotation ±15°). Las hojas son isótropas — rotar es válido.
     """
+    aug = aug_cfg or {}
+    hue             = aug.get('hue', 0.02)
+    grayscale_p     = aug.get('grayscale_p', 0.05)
+    blur_p          = aug.get('global_blur_p', 0.40)
+    rotation_p      = aug.get('global_rotation_p', 0.30)
+
     def _make_global_pipeline():
         return T.Compose([
-            T.RandomResizedCrop(global_size, scale=(0.65, 1.0)),
+            T.RandomResizedCrop(global_size, scale=(0.3, 1.0)),
             T.RandomHorizontalFlip(),
             T.RandomVerticalFlip(p=0.5),
-            T.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.06, hue=0.02),
-            T.RandomGrayscale(p=0.01),
-            T.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
+            # Rotación libre: texturas y hojas son isótropas (no hay 'arriba' canónico)
+            T.RandomApply([T.RandomRotation(degrees=15)], p=rotation_p),
+            # hue muy bajo para no corromper la firma cromática diagnóstica
+            T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=hue),
+            # grayscale mínimo: mosaic y potassium_deficiency son enfermedades de color
+            T.RandomGrayscale(p=grayscale_p),
+            # kernel proporcional a la resolución global (≈ global_size / 35, impar)
+            T.RandomApply([T.GaussianBlur(kernel_size=11, sigma=(0.3, 1.5))], p=blur_p),
             T.ToTensor(),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
     return _make_global_pipeline(), _make_global_pipeline()
 
-def get_local_transforms(local_size=128, ultra_size=96):
+
+def get_local_transforms(local_size=128, ultra_size=96, aug_cfg=None):
     """ 4 vistas locales (`local_size`) y 1 vista ultra-local (`ultra_size`).
-    
-    Fase 1: 96px / 64px — micro-lesiones en texturas.
+
+    Fase 1: 96px / 72px — micro-lesiones en texturas.
     Fase 2: 128px / 96px — región foliar con contexto sobre hoja completa.
+
+    Parametros de augmentation (aug_cfg, leídos del YAML):
+      - hue          : Más restrictivo que global (≤0.01). Los crops locales amplían
+                       lesiones pequeñas donde el color es aún más discriminativo.
+      - grayscale_p  : Igual que global (≤0.05).
+      - local_blur_p : P(GaussianBlur) en vistas locales. Kernel chico para no destruir
+                       micro-texturas de frog_eye y mosaic.
     """
-    
+    aug = aug_cfg or {}
+    hue         = aug.get('hue', 0.01)
+    grayscale_p = aug.get('grayscale_p', 0.05)
+    blur_p      = aug.get('local_blur_p', 0.30)
+
     def _make_local_pipeline(size, scale):
+        # kernel debe ser impar y proporcional al crop (≈ size / 13, mín 3)
+        k = max(3, (size // 13) | 1)  # '| 1' garantiza impar
         return T.Compose([
             T.RandomResizedCrop(size, scale=scale),
             T.RandomHorizontalFlip(),
             T.RandomVerticalFlip(p=0.5),
-            T.ColorJitter(brightness=0.12, contrast=0.12, saturation=0.06, hue=0.02),
-            T.RandomGrayscale(p=0.01),
-            T.GaussianBlur(kernel_size=3, sigma=(0.1, 0.5)),
+            # contrast más alto para resaltar bordes de lesiones en crops pequeños
+            T.ColorJitter(brightness=0.3, contrast=0.5, saturation=0.3, hue=hue),
+            T.RandomGrayscale(p=grayscale_p),
+            # kernel dinámico proporcional al tamaño del crop
+            T.RandomApply([T.GaussianBlur(kernel_size=k, sigma=(0.1, 1.0))], p=blur_p),
             T.ToTensor(),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-    
+
     # 4 vistas del tamaño local principal (128px en Fase 2, 96px en Fase 1)
     t_local = [_make_local_pipeline(local_size, (0.08, 0.35)) for _ in range(4)]
-    # 1 vista ultra-local para micro-patrones (96px en Fase 2, 64px en Fase 1)
+    # 1 vista ultra-local para micro-patrones (96px en Fase 2, 72px en Fase 1)
     t_ultra = [_make_local_pipeline(ultra_size, (0.04, 0.12)) for _ in range(1)]
-    
+
     return t_local + t_ultra
 
 # ---------------------------------------------------------------------------
@@ -103,8 +137,10 @@ class MoCoDataset(Dataset):
         global_size = cfg.get('global_crop_size', 640)
         local_size  = cfg.get('local_crop_size', 128)
         ultra_size  = int(local_size * 0.75)  # Ultra = 75% del tamaño local
-        self.t_q, self.t_k = get_global_transforms(global_size=global_size)
-        self.local_transforms = get_local_transforms(local_size=local_size, ultra_size=ultra_size)
+        # Parámetros de augmentation: leídos del bloque 'augmentation:' del YAML
+        aug_cfg = cfg.get('augmentation', {})
+        self.t_q, self.t_k = get_global_transforms(global_size=global_size, aug_cfg=aug_cfg)
+        self.local_transforms = get_local_transforms(local_size=local_size, ultra_size=ultra_size, aug_cfg=aug_cfg)
         self._load_errors = _make_shared_counter()
         self.logger = logging.getLogger("AranduSSL")
 

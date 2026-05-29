@@ -15,11 +15,17 @@ import seaborn as sns
 from models.moco import ModelBase
 from engine.setup import build_eval_dataset
 
-def get_val_transforms():
-    """Transformaciones estándar para validación — alineadas con setup.py (320px)."""
+def get_val_transforms(eval_size: int = 384):
+    """Transformaciones estándar para validación.
+
+    BUG-12 FIX: La resolución debe coincidir con global_crop_size del encoder.
+    Un encoder entrenado a 384px extrae features en una distribución diferente
+    si se le pasan imágenes de 320px — degradación silenciosa de las métricas.
+    Se lee desde config['moco']['global_crop_size'] en evaluate().
+    """
     return transforms.Compose([
-        transforms.Resize(320),
-        transforms.CenterCrop(320),
+        transforms.Resize(eval_size),
+        transforms.CenterCrop(eval_size),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
@@ -34,7 +40,16 @@ def evaluate():
         config = yaml.safe_load(f)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"[*] Evaluando en dispositivo: {device}")
+    # Tipo de device para autocast (str requerido por torch.amp.autocast)
+    device_type = device.type if hasattr(device, 'type') else str(device).split(':')[0]
+    # BUG-12 FIX: resolución dinámica desde config — el encoder fue entrenado
+    # a esta resolución; usar otra crea mismatch en el espacio latente.
+    eval_size = config['moco'].get('global_crop_size', 384)
+    # BUG-13 FIX: num_workers y batch_size desde config, no hardcodeados.
+    n_workers  = config['training'].get('num_workers', 4)
+    eval_batch = max(config['training'].get('batch_size', 16), 32)
+    use_amp    = config['training'].get('use_amp', False)
+    print(f"[*] Evaluando en dispositivo: {device} | eval_size={eval_size}px | amp={use_amp}")
 
     # 2. Cargar Dataset de Validación
     val_dir = config['paths']['eval_val_root']
@@ -51,8 +66,13 @@ def evaluate():
     print(f"[*] Cargando dataset desde: {val_dir}")
     # Pasar el data_yaml para obtener nombres de clase reales (no dummies)
     data_yaml_path = config['paths'].get('data_yaml', None)
-    val_ds = build_eval_dataset(val_dir, transform=get_val_transforms(), data_yaml_path=data_yaml_path)
-    val_loader = DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=4, pin_memory=True)
+    # BUG-12 FIX: eval_size dinámico, no hardcodeado
+    val_ds = build_eval_dataset(val_dir, transform=get_val_transforms(eval_size), data_yaml_path=data_yaml_path)
+    val_loader = DataLoader(
+        val_ds, batch_size=eval_batch, shuffle=False,
+        num_workers=n_workers, pin_memory=True,
+        persistent_workers=(n_workers > 0)
+    )
     class_names = val_ds.classes
     num_classes = len(class_names)
     if any(c.startswith('Class_') for c in class_names):
@@ -61,23 +81,29 @@ def evaluate():
 
     # 3. Reconstruir el Modelo
     encoder_path = config['paths']['encoder_export_path']
-    head_path = encoder_path.replace('.pth', '_head.pth')
-    
+    head_path    = encoder_path.replace('.pth', '_head.pth')
+
+    # Guard: verificar que los pesos existen antes de cargar
+    for label, path in [("Encoder", encoder_path), ("Head lineal", head_path)]:
+        if not os.path.exists(path):
+            print(f"\u274c Error: {label} no encontrado en '{path}'.")
+            print(f"   Ejecuta train.py primero para generar los pesos.")
+            sys.exit(1)
+
     print(f"[*] Cargando Encoder: {encoder_path}")
     encoder = ModelBase(
         dim=config['moco']['dim'],
         predictor_hidden_dim=config['moco'].get('predictor_hidden_dim', 1024)
     )
-    # Cargar pesos con weights_only=True por seguridad
     encoder.load_state_dict(torch.load(encoder_path, map_location='cpu', weights_only=True))
-    encoder = encoder.to(device)
-    encoder.eval()
+    encoder = encoder.to(device).eval()
 
     print(f"[*] Cargando Sonda Lineal (Clasificador): {head_path}")
-    # Inferir dimensión proyectada pasando un tensor dummy
+    # BUG-12 FIX: dummy con eval_size real — no 320 hardcodeado.
     with torch.no_grad():
-        dummy = torch.randn(1, 3, 320, 320).to(device)
+        dummy   = torch.randn(1, 3, eval_size, eval_size).to(device)
         proj_dim = encoder(dummy, use_predictor=False).shape[-1]
+    print(f"[*] Dimensión del projector inferida: {proj_dim}")
     
     classifier = nn.Sequential(
         nn.LayerNorm(proj_dim),
@@ -96,15 +122,25 @@ def evaluate():
     with torch.no_grad():
         for x, y in val_loader:
             x = x.to(device, non_blocking=True)
-            # Extraer features normalizados (igual que en linear_probe.py)
-            feats = F.normalize(encoder(x, use_predictor=False), dim=1)
-            logits = classifier(feats)
-            probs = F.softmax(logits, dim=1)
-            preds = torch.argmax(logits, dim=1)
-            
+            # BUG-10 FIX: autocast obligatorio cuando use_amp=True.
+            # Sin él, encoder y classifier operan en float32 pero sus pesos
+            # pueden estar en BF16 (guardados por AMP durante el training).
+            # Esto causa dtype mismatch silencioso → resultados de inferencia
+            # incorrectos que no generan error pero sí predicciones erróneas.
+            with torch.amp.autocast(device_type, enabled=use_amp):
+                feats = F.normalize(encoder(x, use_predictor=False), dim=1)
+                logits = classifier(feats)
+                probs  = F.softmax(logits, dim=1)
+                preds  = torch.argmax(logits, dim=1)
+
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(y.numpy())
-            all_probs.extend(probs.cpu().numpy())
+            all_probs.extend(probs.cpu().float().numpy())
+
+    # Guard: dataset vacío o todos los samples fallaron
+    if len(all_labels) == 0:
+        print("\u274c Error: No se procesaron imágenes. Verifica que val_loader no esté vacío.")
+        sys.exit(1)
 
     all_labels = np.array(all_labels)
     all_preds = np.array(all_preds)

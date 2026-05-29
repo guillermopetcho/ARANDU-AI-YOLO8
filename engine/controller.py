@@ -176,7 +176,10 @@ class TrainingController:
         is_exploitation = self.config.get("training", {}).get("exploitation_mode", False)
         
         if not is_warmup and not is_exploitation and a_ema is not None and u_ema is not None:
-            current_ratio = a_ema / abs(u_ema)
+            # BUG-DIV0 FIX: abs(u_ema) puede ser 0.0 en las primeras épocas cuando
+            # la uniformidad aún no se ha inicializado (u_ema=0). Sin eps se produce
+            # ZeroDivisionError o float('inf') que corrompe el historial del ratio.
+            current_ratio = a_ema / (abs(u_ema) + 1e-8)
             baseline = self.ema_ratio_baseline.update(current_ratio)
             ratio_norm = current_ratio / baseline if baseline > 0 else 1.0
             self.history['ratio_norm'].append(ratio_norm)

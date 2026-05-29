@@ -65,6 +65,15 @@ def extract_features_fast(model, loader, device):
             z = model(x)
         feats.append(z.cpu())
         labels.append(y)
+
+    # BUG-EMPTY-LOADER FIX: torch.cat([]) lanza RuntimeError si el loader no
+    # produjo ningún batch (dataset vacío o todos los samples fallaron).
+    # Se retornan arrays vacíos para que el caller maneje el caso sin crash.
+    if not feats:
+        _logger.warning("extract_features_fast: loader vacío — retornando arrays vacíos.")
+        import numpy as np
+        return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.int64)
+
     return torch.cat(feats).numpy(), torch.cat(labels).numpy()
 
 

@@ -150,9 +150,16 @@ def main():
     best_ckpt_path = CONFIG["paths"].get("best_checkpoint_path", "")
     is_exploitation = CONFIG.get("training", {}).get("exploitation_mode", False)
 
-    # C1 FIX: Carga de checkpoint usando engine/checkpoint.py
-    if ckpt_path and os.path.exists(ckpt_path):
-        ckpt_to_load = get_latest_valid_checkpoint(CONFIG["paths"])
+    # Bug #2 FIX: Respetar explicitamente `resume_checkpoint` del YAML.
+    # Prioridad: 1. resume_checkpoint del YAML (si existe el archivo),
+    #            2. checkpoint_path existente (reanudación normal),
+    #            3. best_checkpoint_path existente (fallback),
+    #            4. None = empezar desde cero.
+    resume_ckpt_cfg = CONFIG["paths"].get("resume_checkpoint", "").strip()
+    if resume_ckpt_cfg and os.path.exists(resume_ckpt_cfg):
+        ckpt_to_load = resume_ckpt_cfg
+    elif ckpt_path and os.path.exists(ckpt_path):
+        ckpt_to_load = ckpt_path
     elif best_ckpt_path and os.path.exists(best_ckpt_path):
         ckpt_to_load = best_ckpt_path
     else:
@@ -187,17 +194,19 @@ def main():
             with open(proj_log_file, "w", newline="") as f:
                 csv.writer(f).writerow(["epoch", "total_mean", "total_std", "total_norm"])
 
-    EVAL_SUBSET_REFRESH_FREQ = 5
     eval_workers = min(2, CONFIG["training"]["num_workers"])
+    # Batch size seguro para evaluación - consistente con build_dataloaders()
+    _eval_bs = max(CONFIG["training"]["batch_size"], 32)
+    EVAL_SUBSET_REFRESH_FREQ = 5
 
     for epoch in range(start_epoch, CONFIG["training"]["epochs"]):
         if is_distributed and train_loader.sampler is not None:
             train_loader.sampler.set_epoch(epoch)
 
-        # C3 FIX: Rerandomizar subconjunto de evaluación periódicamente
+        # C3 FIX: Rerandomizar subconjunto de evaluación periódicamente (con batch_size correcto)
         if rank == 0 and epoch > 0 and epoch % EVAL_SUBSET_REFRESH_FREQ == 0:
             eval_train_loader = make_eval_subset_loader(
-                eval_ds, CONFIG["eval"]["subset_size"], eval_workers
+                eval_ds, CONFIG["eval"]["subset_size"], eval_workers, _eval_bs
             )
             logger.info(f"🔀 Subconjunto KNN rerandomizado (epoch {epoch})")
 

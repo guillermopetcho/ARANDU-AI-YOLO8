@@ -111,7 +111,12 @@ class MoCoTrainer:
                     # === Vistas Locales (Multi-Crop DINO-style) Vectorizadas ===
                     # T5 FIX: Vectorización completa para maximizar Throughput.
                     # Pasamos de O(N) llamadas secuenciales a O(1) llamada masiva.
-                    loss_local = 0.0
+                    #
+                    # BUG-LOCAL FIX: Inicializar como tensor (no float 0.0) para que
+                    # la suma 'tensor_loss + cross_entropy_tensor' preserve el grafo
+                    # de cómputo bajo AMP. Con float 0.0 como acumulador, el primer
+                    # sumando rompe el grafo y el gradiente NO se propaga a local_crops.
+                    loss_local = torch.tensor(0.0, device=self.device)
                     if local_crops is not None and len(local_crops) > 0:
                         # Agrupar crops por resolución para maximizar throughput en GPU
                         shape_groups = defaultdict(list)  # import movido al top del módulo
@@ -154,7 +159,11 @@ class MoCoTrainer:
                     self.optimizer.zero_grad(set_to_none=True)  # Limpiar grads contaminados
                     continue
 
-                accum_count = (step % self.config['training']['grad_accum_steps']) + 1 if is_last_batch and not is_accum_step else self.config['training']['grad_accum_steps']
+                accum_count = self.config['training']['grad_accum_steps']
+                if is_last_batch and not is_accum_step:
+                    # Último batch parcial: el denominador real es cuántos pasos
+                    # hubo desde el último flush (no grad_accum_steps completos).
+                    accum_count = (step % self.config['training']['grad_accum_steps']) + 1
                 self.scaler.scale(loss / accum_count).backward()
 
             # === Paso de Optimización ===
@@ -193,7 +202,18 @@ class MoCoTrainer:
 
                 with torch.no_grad():
                     momentum_update(self.model_q, self.model_k, momentum)
-                    self.queue.enqueue_dequeue(k, step=global_step)
+                    # BUG-ENQUEUE FIX: El enqueue de la queue DEBE estar dentro del
+                    # bloque de optimización (if not is_accumulating). Antes estaba
+                    # un nivel arriba, por lo que en pasos de acumulación se encolaba
+                    # k del batch ANTERIOR (k ya asignado fuera del scope de control),
+                    # contaminando la queue con representaciones desactualizadas.
+                    #
+                    # BUG-KNONE FIX: k puede ser None si TODOS los batches del
+                    # primer ciclo de acumulación fueron NaN (continue en L155
+                    # sin asignar k en L144). enqueue_dequeue(None) causa
+                    # AttributeError en keys.shape. Guard obligatorio.
+                    if k is not None:
+                        self.queue.enqueue_dequeue(k, step=global_step)
 
             # === Métricas === (solo si q y k fueron asignados en este step)
             if q is not None:

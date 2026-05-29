@@ -54,12 +54,18 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     n_workers = config['training']['num_workers']
+    # Bug #4 FIX: Leer batch_size del config en lugar de hardcodear 256/128 (causa OOM).
+    lp_batch = config.get('eval', {}).get('linear_probe_batch_size', 32)
     # B11 FIX: persistent_workers solo es válido cuando num_workers > 0
-    train_loader = DataLoader(train_ds, batch_size=256, shuffle=True,
+    train_loader = DataLoader(train_ds, batch_size=lp_batch, shuffle=True,
                               num_workers=n_workers, pin_memory=True,
                               persistent_workers=(n_workers > 0))
-    val_loader = DataLoader(val_ds, batch_size=128, shuffle=False,
-                            num_workers=n_workers, pin_memory=True)
+    # BUG-VALLOADER FIX: persistent_workers evita reinicializar workers en cada
+    # epoch del loop de evaluación. Sin esto, cada epoch del LinearProbe paga
+    # el costo de spawn de n_workers procesos al principio del val loop.
+    val_loader = DataLoader(val_ds, batch_size=lp_batch, shuffle=False,
+                            num_workers=n_workers, pin_memory=True,
+                            persistent_workers=(n_workers > 0))
 
     device_type = device.type if hasattr(device, 'type') else str(device).split(':')[0]
     use_amp = config.get('training', {}).get('use_amp', False)
@@ -98,8 +104,12 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     with torch.no_grad():
         for x, y in val_loader:
             x = x.to(device, non_blocking=True)
-            feats = F.normalize(encoder(x, use_predictor=False), dim=1)
-            preds = torch.argmax(classifier(feats), dim=1)
+            # BUG-AUTOCAST-VAL FIX: sin autocast el encoder y el classifier operan
+            # en float32, pero sus parámetros pueden estar en bf16/fp16 bajo AMP.
+            # Esto causa dtype mismatch silencioso → resultados de val incorrectos.
+            with torch.amp.autocast(device_type, enabled=use_amp):
+                feats = F.normalize(encoder(x, use_predictor=False), dim=1)
+                preds = torch.argmax(classifier(feats), dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(y.numpy())
 

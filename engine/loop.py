@@ -8,6 +8,7 @@ import os
 import csv
 import logging
 import warnings
+import numpy as np
 import torch
 import torch.distributed as dist
 
@@ -29,19 +30,26 @@ def handle_evaluation(
     device, is_distributed, CONFIG, logger, controller, metrics
 ):
     """Ejecuta la evaluación KNN y el análisis del espacio latente."""
+    curr_acc = -1.0  # BUG-EMPTY-EVAL FIX: valor por defecto seguro si los arrays quedan vacíos
     eval_model = get_model_module(model_q, is_distributed)
     eval_model.eval()
     X_t, y_t = extract_features_fast(eval_model, eval_train_loader, device)
     X_v, y_v = extract_features_fast(eval_model, eval_val_loader, device)
     eval_model.train()
-    
+
+    # Guard: si alguno de los splits está vacío, el KNN y el SVD no tienen sentido.
+    # Retornar CONTINUE sin modificar el controller para no disparar rollbacks falsos.
+    if len(X_t) == 0 or len(X_v) == 0:
+        logger.warning("⚠️ handle_evaluation: features vacías (loader vacío). Saltando eval.")
+        return Action.CONTINUE, curr_acc
+
     curr_acc = fast_knn(X_t, y_t, X_v, y_v, k=CONFIG["eval"]["knn_k"])
     logger.info(f"KNN ACC: {curr_acc:.4f}")
 
-    # C3 FIX: svdvals requiere al menos 2 muestras. Si el val_loader es muy pequeño
-    # (error de configuración), usar métricas neutras en lugar de crashear.
+    # C3 FIX: svdvals requiere al menos 2 muestras.
     SVD_MAX_SAMPLES = 2000
-    X_v_t = torch.tensor(X_v)
+    # Bug #5 FIX: torch.from_numpy() zero-copy vs torch.tensor() que siempre copia.
+    X_v_t = torch.from_numpy(np.ascontiguousarray(X_v, dtype=np.float32))
     if len(X_v_t) < 2:
         logger.warning(f"⚠️ eval_val_loader tiene solo {len(X_v_t)} muestras — SVD omitido.")
         metrics['mu'] = torch.zeros(X_v_t.shape[1] if len(X_v_t) > 0 else 256)
@@ -104,9 +112,14 @@ def handle_rollback(
     )
 
     for param_group in optimizer.param_groups:
+        # BUG-ROLLBACK-LR FIX: Guardar el LR original ANTES de modificar initial_lr.
+        # El bug anterior multiplicaba initial_lr *= 0.5 y luego pasaba ese valor
+        # reducido a build_scheduler como base, compoundando el recorte con el
+        # decaimiento cosenoidal (LR efectivo = 0.5 * cosine, no cosine).
+        # Ahora el scheduler recibe el LR original y solo el lr activo se reduce.
         new_lr = param_group['initial_lr'] * 0.5
-        param_group['initial_lr'] = new_lr
         param_group['lr'] = new_lr
+        # initial_lr NO se modifica: el scheduler lo usará como referencia base completa.
 
     scheduler = build_scheduler(optimizer, warmup_steps, total_steps, final_lr_ratio=final_lr_ratio)
     with warnings.catch_warnings():
