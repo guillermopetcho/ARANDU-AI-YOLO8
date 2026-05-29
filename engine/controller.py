@@ -83,7 +83,9 @@ class TrainingController:
         
         # Estado PID Geométrico (Control Continuo Acoplado)
         self.tau = config['moco'].get('temp_start', 0.15) if 'moco' in config else 0.15
-        self.alpha = 1.0 - config['moco'].get('momentum_start', 0.996) if 'moco' in config else 0.004
+        # R-1 FIX: clamp de alpha para evitar EMA divergente si momentum_start > 1.0 por config erróneo.
+        # momentum_start > 1 → alpha < 0 → current_m > 1 → pesos del key encoder crecen sin límite.
+        self.alpha = max(1e-5, 1.0 - config['moco'].get('momentum_start', 0.996)) if 'moco' in config else 0.004
         self.current_m = 1.0 - self.alpha
         self.lr_scale = 1.0
         self.lr_step_factor = 1.0
@@ -523,10 +525,13 @@ class TrainingController:
                 self.prev_pos_sim = avg_pos
                 self.prev_neg_sim = avg_neg
             else:
-                self.prev_mu = self.eval_buffer[0]['mu']
-                self.prev_eff_rank = self.eval_buffer[0]['eff_rank']
-                self.prev_pos_sim = self.eval_buffer[0]['pos_sim']
-                self.prev_neg_sim = self.eval_buffer[0]['neg_sim']
+                # M-1 FIX: Usar eval_buffer[-1] (entrada más reciente) en lugar de [0] (más antigua).
+                # Con [0], en la segunda activación el drift se calculaba comparando contra datos
+                # de 2 épocas atrás en lugar de 1, inflando artificialmente la señal de crisis.
+                self.prev_mu = self.eval_buffer[-1]['mu']
+                self.prev_eff_rank = self.eval_buffer[-1]['eff_rank']
+                self.prev_pos_sim = self.eval_buffer[-1]['pos_sim']
+                self.prev_neg_sim = self.eval_buffer[-1]['neg_sim']
 
         return Action.CONTINUE
 

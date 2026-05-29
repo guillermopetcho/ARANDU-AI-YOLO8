@@ -52,7 +52,11 @@ def handle_evaluation(
     X_v_t = torch.from_numpy(np.ascontiguousarray(X_v, dtype=np.float32))
     if len(X_v_t) < 2:
         logger.warning(f"⚠️ eval_val_loader tiene solo {len(X_v_t)} muestras — SVD omitido.")
-        metrics['mu'] = torch.zeros(X_v_t.shape[1] if len(X_v_t) > 0 else 256)
+        # M-4 FIX: Usar CONFIG['moco']['dim'] en lugar de 256 hardcodeado.
+        # Si el encoder tiene dim=512 (valor del YAML) y X_v_t está vacío,
+        # el torch.stack del controller fallaba con shape mismatch [512] vs [256].
+        embed_dim = CONFIG['moco'].get('dim', 512)
+        metrics['mu'] = torch.zeros(X_v_t.shape[1] if len(X_v_t) > 0 else embed_dim)
         metrics['eff_rank'] = 1.0
         return controller.step_epoch(epoch, curr_acc, metrics), curr_acc
 

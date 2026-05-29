@@ -17,7 +17,12 @@ def batch_shuffle_ddp(x):
     if batch_size_all % batch_size_this != 0:
         raise RuntimeError("Mismatch crítico en multi-GPU durante shuffle.")
     num_gpus = batch_size_all // batch_size_this
-    idx_shuffle = torch.randperm(batch_size_all, device=x.device)
+    # R-2 FIX: calcular randperm solo en rank 0 y hacer broadcast.
+    # Antes se calculaba en TODOS los ranks (O(N) innecesario) aunque solo
+    # el de rank 0 se usaba; los demás eran descartados por el broadcast.
+    idx_shuffle = torch.zeros(batch_size_all, dtype=torch.long, device=x.device)
+    if dist.get_rank() == 0:
+        idx_shuffle = torch.randperm(batch_size_all, device=x.device)
     dist.broadcast(idx_shuffle, src=0)
     idx_this = idx_shuffle.view(num_gpus, -1)[dist.get_rank()]
     return x_gather[idx_this], idx_shuffle

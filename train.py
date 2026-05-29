@@ -196,7 +196,7 @@ def main():
 
     eval_workers = min(2, CONFIG["training"]["num_workers"])
     # Batch size seguro para evaluación - consistente con build_dataloaders()
-    _eval_bs = max(CONFIG["training"]["batch_size"], 32)
+    _eval_bs = min(CONFIG["training"]["batch_size"], 64)
     EVAL_SUBSET_REFRESH_FREQ = 5
 
     for epoch in range(start_epoch, CONFIG["training"]["epochs"]):
@@ -214,6 +214,11 @@ def main():
 
         if rank == 0:
             curr_acc = -1
+            # M-8 FIX: Guardar best_acc ANTES de handle_evaluation.
+            # controller.step_epoch() (dentro de handle_evaluation) actualiza best_acc si
+            # curr_acc > best_acc. Si comparamos curr_acc >= controller.best_acc DESPUÉS,
+            # la condición es trivialmente True en igualdad → best ckpt sobreescrito en vano.
+            prev_best_acc = controller.best_acc
             eval_freq = 1
 
             if (epoch + 1) % eval_freq == 0:
@@ -235,7 +240,7 @@ def main():
             save_checkpoint(CONFIG["paths"]["checkpoint_path"], ckpt_dict)
 
             if (epoch + 1) % eval_freq == 0:
-                if curr_acc >= controller.best_acc and curr_acc > 0:
+                if curr_acc > prev_best_acc and curr_acc > 0:  # M-8 FIX: comparar contra best_acc previo
                     save_checkpoint(CONFIG["paths"]["best_checkpoint_path"], ckpt_dict)
                     logger.info("🏆 Best model guardado")
 
@@ -375,7 +380,9 @@ def main():
                 dim=CONFIG["moco"]["dim"],
                 predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 1024)
             ).to(device)
-            eval_model_base.load_state_dict(clean_model_q, strict=False)
+            res = eval_model_base.load_state_dict(clean_model_q, strict=False)
+            if res.missing_keys: logger.warning(f"⚠️ Linear Probe model missing keys: {res.missing_keys}")
+            if res.unexpected_keys: logger.warning(f"⚠️ Linear Probe model unexpected keys: {res.unexpected_keys}")
 
             num_classes = len(eval_ds.classes)
             head, acc, f1 = run_linear_probe(eval_model_base, eval_ds, val_ds, num_classes, CONFIG, device)

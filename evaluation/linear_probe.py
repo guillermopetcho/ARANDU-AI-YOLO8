@@ -84,6 +84,10 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
                 with torch.amp.autocast(device_type, enabled=use_amp):
                     feats = F.normalize(encoder(x, use_predictor=False), dim=1)
             
+            # M-5 FIX: Detach explícito de feats para liberar referencias al autograd
+            # graph del encoder. Sin esto, feats retiene la memoria del graph hasta
+            # el final del scope, generando presión de RAM en datasets grandes.
+            feats = feats.detach()
             optimizer.zero_grad()
             with torch.amp.autocast(device_type, enabled=use_amp):
                 out = classifier(feats)

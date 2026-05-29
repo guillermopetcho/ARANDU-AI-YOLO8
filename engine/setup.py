@@ -35,7 +35,7 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
         self.labels_dir = os.path.join(root, "labels")
         
         self.image_files = []
-        for ext in ('*.jpg', '*.jpeg', '*.png'):
+        for ext in ('*.jpg', '*.jpeg', '*.png', '*.webp', '*.bmp', '*.tiff', '*.tif', '*.JPG', '*.JPEG', '*.PNG', '*.WEBP', '*.BMP', '*.TIFF', '*.TIF'):
             self.image_files.extend(glob.glob(os.path.join(self.images_dir, ext)))
 
         # --- Inferencia de clases reales desde data.yaml ---
@@ -220,11 +220,24 @@ def build_dataloaders(CONFIG, is_distributed, rank):
     ])
     # Pasar el data_yaml para que YOLOClassificationDataset lea las clases reales
     data_yaml = CONFIG["paths"].get("data_yaml", None)
+    # R-6 FIX: Emitir warning si el dataset parece YOLO pero data_yaml no está configurado.
+    # Sin data_yaml, YOLOClassificationDataset cae al fallback dinámico que genera nombres
+    # genéricos (Class_0..N) en lugar de los nombres reales del dataset.
+    _eval_root = CONFIG["paths"]["eval_train_root"]
+    if not data_yaml and os.path.isdir(os.path.join(_eval_root, "images")) and os.path.isdir(os.path.join(_eval_root, "labels")):
+        logging.getLogger("AranduSSL").warning(
+            "⚠️ R-6: Dataset en formato YOLO detectado pero 'paths.data_yaml' está vacío. "
+            "Se usarán nombres genéricos (Class_0..N). "
+            "Configura 'paths.data_yaml' en moco.yaml para nombres de clase reales."
+        )
     eval_ds = build_eval_dataset(CONFIG["paths"]["eval_train_root"], transform=eval_transform, data_yaml_path=data_yaml)
     val_ds = build_eval_dataset(CONFIG["paths"]["eval_val_root"], transform=eval_transform, data_yaml_path=data_yaml)
 
     eval_workers = min(2, n_workers)
-    eval_batch_size = max(CONFIG["training"]["batch_size"], 32) # Safe batch size for eval
+    # M-3 FIX: Usar min() en lugar de max() para que eval_batch_size nunca supere el
+    # batch de entrenamiento en GPUs con poca VRAM. max() podía forzar batch=64 en
+    # eval cuando training usaba batch=16, causando OOM con el modelo en float32.
+    eval_batch_size = min(CONFIG["training"]["batch_size"], 64)  # Cap seguro para eval
     
     # C3 FIX: Usar make_eval_subset_loader() para permitir rerandomización periódica.
     eval_train_loader = make_eval_subset_loader(eval_ds, CONFIG["eval"]["subset_size"], eval_workers, eval_batch_size)

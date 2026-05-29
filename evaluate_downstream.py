@@ -55,14 +55,14 @@ def evaluate():
     val_dir = config['paths']['eval_val_root']
     if not os.path.exists(val_dir):
         print(f"[!] ADVERTENCIA: val_dir no encontrado en '{val_dir}'.")
-        kaggle_fallback = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/valid"
-        if os.path.exists(kaggle_fallback):
-            val_dir = kaggle_fallback
-            print(f"[*] Usando fallback Kaggle: {val_dir}")
-        else:
-            print(f"❌ Error: No se encontró un directorio de validación válido.")
-            print(f"   Verifica 'paths.eval_val_root' en tu config/moco.yaml.")
-            sys.exit(1)
+        # R-4 FIX: Eliminar fallback hardcodeado con user/dataset ID específico.
+        # Un path fijo como "/kaggle/input/datasets/guillermopetcho/..." rompe el script
+        # en cualquier fork del proyecto o si el dataset cambia de nombre.
+        # Se falla explícitamente con instrucciones claras en lugar de intentar un path
+        # que con alta probabilidad no existe en el entorno del usuario.
+        print(f"❌ Error: No se encontró un directorio de validación válido en: '{val_dir}'")
+        print(f"   Verifica 'paths.eval_val_root' en config/moco.yaml y que el dataset esté montado.")
+        sys.exit(1)
     print(f"[*] Cargando dataset desde: {val_dir}")
     # Pasar el data_yaml para obtener nombres de clase reales (no dummies)
     data_yaml_path = config['paths'].get('data_yaml', None)

@@ -168,7 +168,9 @@ class MoCoDataset(Dataset):
                 if len(self.paths) == 0:
                     raise RuntimeError("MoCoDataset está vacío.")
                 idx = random.randint(0, len(self.paths) - 1)
-        raise RuntimeError(f"MoCoDataset falló 100 veces. Último error: {last_err}")
+        # M-7 FIX: El mensaje anterior decía "100 veces" hardcodeado, pero max_retries
+        # es min(100, len(self.paths)). Con datasets pequeños el error era engañoso.
+        raise RuntimeError(f"MoCoDataset falló {max_retries} veces. Último error: {last_err}")
 
 def build_index(root, rank, cache_path):
     is_dist = dist.is_available() and dist.is_initialized()
@@ -186,7 +188,11 @@ def build_index(root, rank, cache_path):
         if rebuild:
             _logger = logging.getLogger("AranduSSL")
             _logger.info(f"📂 Escaneando {root}...")
-            files = sorted([str(f) for ext in ["*.jpg", "*.png", "*.jpeg", "*.JPG", "*.PNG", "*.JPEG"] for f in Path(root).rglob(ext)])
+            # R-3 FIX: Escanear todas las entradas con rglob("*") y filtrar por extensión
+            # en minúsculas. El método anterior usaba 6 patrones fijos que no cubrían
+            # variantes mixtas (.Jpg, .Jpeg) ni formatos adicionales (.webp, .bmp, .tiff).
+            _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif"}
+            files = sorted([str(f) for f in Path(root).rglob("*") if f.suffix.lower() in _IMG_EXTS])
             if len(files) == 0:
                 raise RuntimeError(f"Sin imágenes en {root}")
             np.save(cache_path, files)
@@ -289,5 +295,10 @@ class MoCoQueue(nn.Module):
         if step is not None and step % 500 == 0:
             with torch.no_grad():
                 self.queue.copy_(F.normalize(self.queue, dim=0))
-                if dist.is_available() and dist.is_initialized():
+                # C-4 FIX: dist.broadcast requiere que el tensor esté en CUDA.
+                # Sin el guard de device, falla con RuntimeError críptico en entornos
+                # CPU (tests, CI) y puede causar deadlock en multi-nodo si la queue
+                # está en un device inesperado. El broadcast solo tiene sentido en GPU.
+                if (dist.is_available() and dist.is_initialized()
+                        and self.queue.device.type != 'cpu'):
                     dist.broadcast(self.queue, src=0)

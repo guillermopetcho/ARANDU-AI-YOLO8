@@ -33,9 +33,15 @@ class AranduInferenceEngine:
         self.class_names = None
         self.num_classes = None
 
+        # C-1 FIX: Leer resolución desde config para que coincida con la resolución
+        # de entrenamiento del encoder. Antes estaba hardcodeada en 320px mientras
+        # el encoder fue entrenado a 384px (global_crop_size en moco.yaml),
+        # causando mismatch de distribución silencioso y degradación de accuracy.
+        self.eval_size = self.config['moco'].get('global_crop_size', 384)
+
         self.transform = transforms.Compose([
-            transforms.Resize(320),
-            transforms.CenterCrop(320),
+            transforms.Resize(self.eval_size),
+            transforms.CenterCrop(self.eval_size),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
@@ -104,7 +110,8 @@ class AranduInferenceEngine:
 
         print("[*] Cargando Head Lineal...")
         with torch.no_grad():
-            dummy = torch.randn(1, 3, 320, 320).to(self.device)
+            # C-1 FIX: Usar self.eval_size (leído desde config) en lugar de 320 hardcodeado.
+            dummy = torch.randn(1, 3, self.eval_size, self.eval_size).to(self.device)
             proj_dim = self.encoder(dummy, use_predictor=False).shape[-1]
             
         self.head = nn.Sequential(

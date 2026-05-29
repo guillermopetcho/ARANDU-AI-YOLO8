@@ -36,6 +36,10 @@ class MoCoTrainer:
         pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps = 0.0, 0.0, 0.0, 0
         norm_sum, queue_std_sum = 0.0, 0.0
         valid_steps = 0
+        # R-5 FIX: Contador de batches válidos (no-NaN) dentro de la ventana de acumulación
+        # actual. Necesario para calcular accum_count correctamente cuando hay batches NaN
+        # saltados: `step` avanza aunque no se acumuló gradiente, causando denominador inflado.
+        valid_in_window = 0
         # T1 FIX: Inicializar aliases antes del loop para evitar UnboundLocalError
         # si el primer batch produce NaN y el loop hace 'continue' sin asignarlos.
         q = k = l_pos = l_neg = None
@@ -48,6 +52,11 @@ class MoCoTrainer:
             # F6 FIX: local_crops es [B, N, C, H, W] (5D).
             # channels_last solo aplica a tensores 4D — se aplica por slice dentro del loop.
             v_q, v_k, local_crops = batch
+            # C-2 FIX: default_collate apila crops del mismo tamaño en tensor 5D [B, N, C, H, W].
+            # Eso rompe el loop de shape_groups porque len() devuelve B (imágenes) en lugar de N (crops).
+            # Normalizar a lista de tensores [B, C, H, W] para que el resto del pipeline sea correcto.
+            if isinstance(local_crops, torch.Tensor) and local_crops.ndim == 5:
+                local_crops = list(local_crops.unbind(dim=1))
             # local_crops es ahora una lista de tensores [ [B, C, H_i, W_i], ... ]
             
             # --- CURRICULUM DINÁMICO ---
@@ -116,7 +125,11 @@ class MoCoTrainer:
                     # la suma 'tensor_loss + cross_entropy_tensor' preserve el grafo
                     # de cómputo bajo AMP. Con float 0.0 como acumulador, el primer
                     # sumando rompe el grafo y el gradiente NO se propaga a local_crops.
-                    loss_local = torch.tensor(0.0, device=self.device)
+                    # C-3 FIX: torch.zeros([]) crea un escalar-cero sin autograd graph propio.
+                    # Al sumarse con loss_global (que sí tiene grad), el resultado hereda el grafo
+                    # correctamente. Usar zeros([]) en lugar de tensor(0.0) evita ambigüedad de
+                    # dtype bajo AMP: el acumulador no fuerza un cast a float32 en la suma.
+                    loss_local = torch.zeros([], device=self.device)
                     if local_crops is not None and len(local_crops) > 0:
                         # Agrupar crops por resolución para maximizar throughput en GPU
                         shape_groups = defaultdict(list)  # import movido al top del módulo
@@ -159,11 +172,16 @@ class MoCoTrainer:
                     self.optimizer.zero_grad(set_to_none=True)  # Limpiar grads contaminados
                     continue
 
+                # R-5 FIX: Incrementar aquí, justo después de confirmar que el batch es válido.
+                valid_in_window += 1
+
                 accum_count = self.config['training']['grad_accum_steps']
                 if is_last_batch and not is_accum_step:
-                    # Último batch parcial: el denominador real es cuántos pasos
-                    # hubo desde el último flush (no grad_accum_steps completos).
-                    accum_count = (step % self.config['training']['grad_accum_steps']) + 1
+                    # Último batch parcial: denominador real = batches válidos en esta ventana.
+                    # R-5 FIX: usar valid_in_window en lugar de (step % grad_accum_steps) + 1.
+                    # step cuenta todos los batches (incluyendo NaN saltados), por lo que
+                    # el denominador anterior estaba inflado cuando había batches NaN.
+                    accum_count = max(1, valid_in_window)
                 self.scaler.scale(loss / accum_count).backward()
 
             # === Paso de Optimización ===
@@ -199,6 +217,7 @@ class MoCoTrainer:
                 
                 self.optimizer.zero_grad(set_to_none=True)
                 global_step += 1
+                valid_in_window = 0  # R-5 FIX: reset para la siguiente ventana de acumulación
 
                 with torch.no_grad():
                     momentum_update(self.model_q, self.model_k, momentum)
@@ -280,7 +299,10 @@ class MoCoTrainer:
             'std': std_sum / num_steps,
             'norm': norm_sum / num_steps,
             'queue_std': queue_std_sum / num_steps,
-            'gn': grad_norm_sum / grad_steps if grad_steps > 0 else None,
+            # M-2 FIX: float('nan') en lugar de None — csv.writer escribe None como el string "None"
+            # que corrompe la columna gn para pandas. float('nan') se serializa como
+            # vacío en CSV y WandB lo omite limpiamente sin romper gráficas.
+            'gn': grad_norm_sum / grad_steps if grad_steps > 0 else float('nan'),
             # N1 FIX: el numerador correcto es imágenes REALMENTE procesadas por todos los ranks.
             # - valid_steps: batches procesados exitosamente en ESTE rank (ya sumado entre ranks en DDP)
             # - batch_size: imágenes por batch por rank

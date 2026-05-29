@@ -154,8 +154,20 @@ def load_checkpoint(
         f"global_step={ckpt.get('global_step', '?')}"
     )
 
-    model_q.load_state_dict(adapt_keys(ckpt["model_q"], is_compiled, is_distributed), strict=False)
-    model_k.load_state_dict(adapt_keys(ckpt["model_k"], is_compiled, False), strict=False)
+    # M-6 FIX: Capturar y loguear missing_keys / unexpected_keys.
+    # strict=False silencia cambios de arquitectura — sin este log, el modelo
+    # carga con pesos aleatorios en capas nuevas sin ninguna advertencia visible.
+    res_q = model_q.load_state_dict(adapt_keys(ckpt["model_q"], is_compiled, is_distributed), strict=False)
+    if res_q.missing_keys:
+        logger.warning(f"⚠️ model_q checkpoint: missing keys → {res_q.missing_keys}")
+    if res_q.unexpected_keys:
+        logger.warning(f"⚠️ model_q checkpoint: unexpected keys → {res_q.unexpected_keys}")
+
+    res_k = model_k.load_state_dict(adapt_keys(ckpt["model_k"], is_compiled, False), strict=False)
+    if res_k.missing_keys:
+        logger.warning(f"⚠️ model_k checkpoint: missing keys → {res_k.missing_keys}")
+    if res_k.unexpected_keys:
+        logger.warning(f"⚠️ model_k checkpoint: unexpected keys → {res_k.unexpected_keys}")
     optimizer.load_state_dict(ckpt["optimizer"])
 
     if "controller" in ckpt:
@@ -205,8 +217,12 @@ def load_weights_for_rollback(
         global_step del checkpoint cargado.
     """
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
-    model_q.load_state_dict(adapt_keys(ckpt["model_q"], is_compiled, is_distributed), strict=False)
-    model_k.load_state_dict(adapt_keys(ckpt["model_k"], is_compiled, False), strict=False)
+    res_q = model_q.load_state_dict(adapt_keys(ckpt["model_q"], is_compiled, is_distributed), strict=False)
+    if res_q.missing_keys: logger.warning(f"⚠️ Rollback model_q missing keys: {res_q.missing_keys}")
+    if res_q.unexpected_keys: logger.warning(f"⚠️ Rollback model_q unexpected keys: {res_q.unexpected_keys}")
+    res_k = model_k.load_state_dict(adapt_keys(ckpt["model_k"], is_compiled, False), strict=False)
+    if res_k.missing_keys: logger.warning(f"⚠️ Rollback model_k missing keys: {res_k.missing_keys}")
+    if res_k.unexpected_keys: logger.warning(f"⚠️ Rollback model_k unexpected keys: {res_k.unexpected_keys}")
     optimizer.load_state_dict(ckpt["optimizer"])
     scaler.load_state_dict(ckpt["scaler"])
     queue.load_state_dict(ckpt["queue"])
