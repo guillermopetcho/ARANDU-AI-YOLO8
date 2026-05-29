@@ -60,7 +60,7 @@ def evaluate():
         # en cualquier fork del proyecto o si el dataset cambia de nombre.
         # Se falla explícitamente con instrucciones claras en lugar de intentar un path
         # que con alta probabilidad no existe en el entorno del usuario.
-        print(f"❌ Error: No se encontró un directorio de validación válido en: '{val_dir}'")
+        print(f" Error: No se encontró un directorio de validación válido en: '{val_dir}'")
         print(f"   Verifica 'paths.eval_val_root' en config/moco.yaml y que el dataset esté montado.")
         sys.exit(1)
     print(f"[*] Cargando dataset desde: {val_dir}")
@@ -173,13 +173,13 @@ def evaluate():
     
     cm_path = "/kaggle/working/confusion_matrix.png" if "kaggle" in val_dir else "confusion_matrix.png"
     plt.savefig(cm_path, dpi=300)
-    print(f"\n🖼️ Matriz de Confusión guardada en: {cm_path}")
+    print(f"\n Matriz de Confusión guardada en: {cm_path}")
     
     # 7. Análisis de Errores (Opcional pero muy útil)
     errores = np.sum(all_labels != all_preds)
     total = len(all_labels)
-    print(f"\n💡 Análisis Rápido: El modelo se equivocó en {errores} de {total} imágenes (Tasa de error: {(errores/total)*100:.2f}%).")
-    print("\n✅ Análisis Finalizado con Éxito.")
+    print(f"\n Análisis Rápido: El modelo se equivocó en {errores} de {total} imágenes (Tasa de error: {(errores/total)*100:.2f}%).")
+    print("\n Análisis Finalizado con Éxito.")
 
 if __name__ == "__main__":
     evaluate()

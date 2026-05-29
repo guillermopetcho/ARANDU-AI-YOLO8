@@ -71,7 +71,7 @@ def main(args):
     if args.mode == "val":
         logger.info(f"Ejecutando validación oficial de Ultralytics sobre: {args.source}")
         metrics = model.val(data=args.source, imgsz=args.imgsz)
-        logger.info(f"🚀 Precisión Top-1 real medida: {metrics.top1 * 100:.2f}%")
+        logger.info(f" Precisión Top-1 real medida: {metrics.top1 * 100:.2f}%")
         return
 
     logger.info(f"Iniciando predicciones sobre la carpeta: {args.source}")
@@ -115,8 +115,8 @@ def main(args):
             writer.writerow(fila)
             count += 1
             
-    logger.info(f"✅ ¡Completado! Se han analizado {count} imágenes.")
-    logger.info(f"✅ Resultados guardados en: {csv_path}")
+    logger.info(f" ¡Completado! Se han analizado {count} imágenes.")
+    logger.info(f" Resultados guardados en: {csv_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

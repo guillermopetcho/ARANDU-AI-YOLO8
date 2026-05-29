@@ -61,7 +61,7 @@ def register_cls_backbone(encoder_path: str, freeze_phase: int = 3):
     setattr(nn_tasks, 'AranduClassify', AranduClassify)
     setattr(sys.modules['ultralytics.nn.tasks'], 'AranduClassify', AranduClassify)
     
-    logger.info("✅ AranduYOLOClsWrapper y AranduClassify registrados para CLASIFICACIÓN.")
+    logger.info(" AranduYOLOClsWrapper y AranduClassify registrados para CLASIFICACIÓN.")
 
 # ---------------------------------------------------------------------------
 # Entrenamiento
@@ -73,7 +73,7 @@ def train(args):
         raise FileNotFoundError(f"Encoder SSL no encontrado: {args.encoder}")
 
     logger.info("=" * 60)
-    logger.info("🌱 ARANDU-AI YOLO — CLASIFICACIÓN SSL")
+    logger.info("🌱 ARANDU-AI YOLO — CLASIFICACIÓN SSL 🌱")
     logger.info(f"   Dataset (Carpetas): {args.data}")
     logger.info(f"   Encoder SSL       : {args.encoder}")
     logger.info(f"   Estrategia        : {args.stage.upper()}")
@@ -123,7 +123,7 @@ def train(args):
     )
 
     best_model = os.path.join(args.project, run_name, "weights", "best.pt")
-    logger.info(f"\n✅ Etapa {args.stage.upper()} completada. Mejor modelo en: {best_model}")
+    logger.info(f"\n Etapa {args.stage.upper()} completada. Mejor modelo en: {best_model}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

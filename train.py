@@ -127,9 +127,9 @@ def main():
 
     try:
         optimizer = torch.optim.AdamW(optim_groups, lr=lr, fused=True)
-        if rank == 0: logger.info("✅ Fused AdamW activado (Weight Decay excluido para biases/LN).")
+        if rank == 0: logger.info(" Fused AdamW activado (Weight Decay excluido para biases/LN).")
     except Exception as e:
-        if rank == 0: logger.warning(f"⚠️ Fused AdamW no soportado ({e}), usando fallback estándar.")
+        if rank == 0: logger.warning(f" Fused AdamW no soportado ({e}), usando fallback estándar.")
         optimizer = torch.optim.AdamW(optim_groups, lr=lr)
     scaler = GradScaler(device.type, enabled=CONFIG["training"]["use_amp"])
 
@@ -167,7 +167,7 @@ def main():
 
     if ckpt_to_load:
         if rank == 0:
-            logger.info(f"🔄 Reanudando desde {ckpt_to_load} "
+            logger.info(f" Reanudando desde {ckpt_to_load} "
                         f"{'(MODO EXPLOTACIÓN)' if is_exploitation else ''}")
         # C2 FIX: load_checkpoint usa weights_only=True
         start_epoch, global_step, scheduler = load_checkpoint(
@@ -208,7 +208,7 @@ def main():
             eval_train_loader = make_eval_subset_loader(
                 eval_ds, CONFIG["eval"]["subset_size"], eval_workers, _eval_bs
             )
-            logger.info(f"🔀 Subconjunto KNN rerandomizado (epoch {epoch})")
+            logger.info(f" Subconjunto KNN rerandomizado (epoch {epoch})")
 
         metrics, global_step = trainer.train_epoch(train_loader, epoch, global_step, total_steps, rank)
 
@@ -242,12 +242,12 @@ def main():
             if (epoch + 1) % eval_freq == 0:
                 if curr_acc > prev_best_acc and curr_acc > 0:  # M-8 FIX: comparar contra best_acc previo
                     save_checkpoint(CONFIG["paths"]["best_checkpoint_path"], ckpt_dict)
-                    logger.info("🏆 Best model guardado")
+                    logger.info(" Best model guardado")
 
                 if getattr(controller, 'is_best_geom', False):
                     geom_ckpt_path = CONFIG["paths"]["checkpoint_path"].replace('.pth', '_best_geom.pth')
                     save_checkpoint(geom_ckpt_path, ckpt_dict)
-                    logger.info("💎 Best Geometric model guardado")
+                    logger.info(" Best Geometric model guardado")
 
             log_buffer.append([
                 epoch+1, metrics['loss'], optimizer.param_groups[0]['lr'], curr_acc,
@@ -367,7 +367,7 @@ def main():
         if not os.path.exists(best_ckpt_file):
             best_ckpt_file = CONFIG["paths"].get("checkpoint_path", "")
         if not best_ckpt_file or not os.path.exists(best_ckpt_file):
-            logger.warning("⚠️ No se encontró checkpoint para Linear Probe. Saltando.")
+            logger.warning(" No se encontró checkpoint para Linear Probe. Saltando.")
         else:
             # C2 FIX: Linear probe usa weights_only=True
             best_ckpt = torch.load(best_ckpt_file, map_location=device, weights_only=True)
@@ -381,8 +381,8 @@ def main():
                 predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 1024)
             ).to(device)
             res = eval_model_base.load_state_dict(clean_model_q, strict=False)
-            if res.missing_keys: logger.warning(f"⚠️ Linear Probe model missing keys: {res.missing_keys}")
-            if res.unexpected_keys: logger.warning(f"⚠️ Linear Probe model unexpected keys: {res.unexpected_keys}")
+            if res.missing_keys: logger.warning(f" Linear Probe model missing keys: {res.missing_keys}")
+            if res.unexpected_keys: logger.warning(f" Linear Probe model unexpected keys: {res.unexpected_keys}")
 
             num_classes = len(eval_ds.classes)
             head, acc, f1 = run_linear_probe(eval_model_base, eval_ds, val_ds, num_classes, CONFIG, device)
@@ -397,8 +397,8 @@ def main():
             class_names_path = CONFIG["paths"]["encoder_export_path"].replace(".pth", "_class_names.json")
             with open(class_names_path, "w") as f:
                 json.dump(eval_ds.classes, f, indent=2)
-            logger.info(f"📋 Clases guardadas: {eval_ds.classes} → {class_names_path}")
-            logger.info("✅ Listo.")
+            logger.info(f" Clases guardadas: {eval_ds.classes} → {class_names_path}")
+            logger.info(" Listo.")
 
 
 if __name__ == "__main__":

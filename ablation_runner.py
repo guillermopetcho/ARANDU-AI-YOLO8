@@ -14,7 +14,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     # MODELO 1: BASELINE YOLOv8 (O YOLO26)
     # =========================================================
     print("\n" + "="*50)
-    print("🚀 INICIANDO MODELO 1: BASELINE PURO")
+    print(" INICIANDO MODELO 1: BASELINE PURO")
     print("="*50)
     # Usar yolov8n.yaml o yolo26.yaml dependiendo de tu versión
     model1 = YOLO("yolov8n.yaml") 
@@ -32,7 +32,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     # MODELO 2: HÍBRIDO RÍGIDO (SIN GATE)
     # =========================================================
     print("\n" + "="*50)
-    print("🚀 INICIANDO MODELO 2: HÍBRIDO RÍGIDO (Sin Gate)")
+    print(" INICIANDO MODELO 2: HÍBRIDO RÍGIDO (Sin Gate)")
     print("="*50)
     
     # Inyectamos el wrapper sin Coordinate Attention (ablation: impacto de CoordAtt)
@@ -70,7 +70,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     # MODELO 3: HÍBRIDO ADAPTATIVO (CONTEXT GATE SOTA)
     # =========================================================
     print("\n" + "="*50)
-    print("🚀 INICIANDO MODELO 3: HÍBRIDO ADAPTATIVO (Con Gate)")
+    print(" INICIANDO MODELO 3: HÍBRIDO ADAPTATIVO (Con Gate)")
     print("="*50)
     
     # Inyectamos el wrapper con Coordinate Attention habilitado (configuración completa)
@@ -103,8 +103,8 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
         seed=42
     )
     
-    print("\n✅ ENTRENAMIENTO DE ABLACIÓN COMPLETADO.")
-    print("👉 Revisa la carpeta 'Ablation_SojAI' para extraer los CSV de métricas.")
+    print("\n ENTRENAMIENTO DE ABLACIÓN COMPLETADO.")
+    print(" Revisa la carpeta 'Ablation_SojAI' para extraer los CSV de métricas.")
 
 if __name__ == "__main__":
     import argparse
@@ -152,9 +152,9 @@ if __name__ == "__main__":
     import os
     errors = []
     if not os.path.isfile(args.data):
-        errors.append(f"  ❌ --data no encontrado: '{args.data}'")
+        errors.append(f"   --data no encontrado: '{args.data}'")
     if not os.path.isfile(args.moco_ckpt):
-        errors.append(f"  ❌ --moco-ckpt no encontrado: '{args.moco_ckpt}'")
+        errors.append(f"   --moco-ckpt no encontrado: '{args.moco_ckpt}'")
 
     if errors:
         print("\n[!] Errores en los argumentos. Corrígelos antes de ejecutar:\n")
@@ -168,7 +168,7 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     print("\n" + "="*60)
-    print("🧪 INICIANDO ESTUDIO DE ABLACIÓN ARANDU-AI")
+    print(" INICIANDO ESTUDIO DE ABLACIÓN ARANDU-AI")
     print(f"  Dataset : {args.data}")
     print(f"  MoCo ckpt: {args.moco_ckpt}")
     print(f"  Epochs  : {args.epochs} | Batch: {args.batch} | Imgsz: {args.imgsz}")

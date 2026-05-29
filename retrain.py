@@ -18,12 +18,12 @@ def _get_base_dir():
 
 def clean_workspace(base_dir):
     print("\n" + "="*50)
-    print("🧹 PREPARANDO RE-ENTRENAMIENTO DESDE CERO")
+    print(" PREPARANDO RE-ENTRENAMIENTO DESDE CERO")
     print("="*50)
 
     config_path = os.path.join(base_dir, "config", "moco.yaml")
     if not os.path.exists(config_path):
-        print(f"❌ Error: No se encontró el archivo de configuración {config_path}")
+        print(f" Error: No se encontró el archivo de configuración {config_path}")
         sys.exit(1)
 
     with open(config_path, "r") as f:
@@ -74,12 +74,12 @@ def clean_workspace(base_dir):
                 print(f"  🗑️  Eliminado: {file_path}")
                 deleted_count += 1
             except Exception as e:
-                print(f"  ⚠️  No se pudo eliminar {file_path}: {e}")
+                print(f"    No se pudo eliminar {file_path}: {e}")
 
     if deleted_count == 0:
-        print("  ✨ El entorno ya está limpio. No había checkpoints anteriores.")
+        print("   El entorno ya está limpio. No había checkpoints anteriores.")
     else:
-        print(f"  ✅ Limpieza completada. {deleted_count} archivos eliminados.")
+        print(f"   Limpieza completada. {deleted_count} archivos eliminados.")
 
 
 def _build_train_command(base_dir):
@@ -121,7 +121,7 @@ def main():
     base_dir = _get_base_dir()
     clean_workspace(base_dir)
 
-    print("\n🚀 INICIANDO NUEVO ENTRENAMIENTO...")
+    print("\n INICIANDO NUEVO ENTRENAMIENTO...")
     print("-" * 50)
 
     cmd = _build_train_command(base_dir)
@@ -130,10 +130,10 @@ def main():
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ El entrenamiento finalizó con errores (código {e.returncode}).")
+        print(f"\n El entrenamiento finalizó con errores (código {e.returncode}).")
         sys.exit(e.returncode)
     except KeyboardInterrupt:
-        print("\n⏸️  Entrenamiento interrumpido por el usuario.")
+        print("\n  Entrenamiento interrumpido por el usuario.")
         sys.exit(0)
 
 

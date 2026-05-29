@@ -58,7 +58,7 @@ def register_backbone(encoder_path: str, phase: int = 1, use_coord_attn: bool = 
 
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapper)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapper)
-    logger.info(f"✅ AranduYOLOWrapper registrado — fase={phase}, coord_attn={use_coord_attn}")
+    logger.info(f" AranduYOLOWrapper registrado — fase={phase}, coord_attn={use_coord_attn}")
     return AranduYOLOWrapper
 
 
@@ -88,7 +88,7 @@ def apply_phase(model: YOLO, phase: int, lr: float) -> float:
             break
 
     if backbone is None:
-        logger.warning("⚠️ AranduBackbone no encontrado en el modelo. Ignorando fase.")
+        logger.warning(" AranduBackbone no encontrado en el modelo. Ignorando fase.")
         return lr
 
     backbone.set_training_phase(phase)
@@ -99,7 +99,7 @@ def apply_phase(model: YOLO, phase: int, lr: float) -> float:
     lr_factors  = {1: 1.0, 2: 0.5, 3: 0.8, 4: 1.0}
 
     effective_lr = lr * lr_factors[phase]
-    logger.info(f"🔄 Fase {phase_names[phase]}")
+    logger.info(f" Fase {phase_names[phase]}")
     logger.info(f"   Parámetros entrenables: {trainable/1e6:.1f}M / {total/1e6:.1f}M total")
     logger.info(f"   LR efectivo: {effective_lr:.2e}")
     return effective_lr
@@ -117,7 +117,7 @@ def train(args):
         raise FileNotFoundError(f"Encoder SSL no encontrado: {args.encoder}")
 
     logger.info("=" * 60)
-    logger.info("🌱 ARANDU-AI YOLO — Entrenamiento con Currículum SSL")
+    logger.info("🌱 ARANDU-AI YOLO — Entrenamiento con Currículum SSL 🌱")
     logger.info(f"   Dataset  : {args.data}")
     logger.info(f"   Encoder  : {args.encoder}")
     logger.info(f"   Épocas   : {args.epochs} | Batch: {args.batch} | Imgsz: {args.imgsz}")
@@ -143,7 +143,7 @@ def train(args):
 
     # ── FASE A: Solo adaptadores ──────────────────────────────────────────
     logger.info("\n" + "─"*50)
-    logger.info("🔒 FASE A — Backbone congelado. Solo SpatialFeatureAdapters.")
+    logger.info(" FASE A — Backbone congelado. Solo SpatialFeatureAdapters.")
     logger.info("─"*50)
 
     register_backbone(args.encoder, phase=1, use_coord_attn=True)
@@ -171,7 +171,7 @@ def train(args):
     )
 
     fase_a_weights = os.path.join(project, "FaseA_Adapters", "weights", "last.pt")
-    logger.info(f"✅ Fase A completada → {fase_a_weights}")
+    logger.info(f" Fase A completada → {fase_a_weights}")
 
     # ── FASE B: Descongelar P5 (Stage 3) ─────────────────────────────────
     logger.info("\n" + "─"*50)
@@ -203,11 +203,11 @@ def train(args):
     )
 
     fase_b_weights = os.path.join(project, "FaseB_P5", "weights", "last.pt")
-    logger.info(f"✅ Fase B completada → {fase_b_weights}")
+    logger.info(f" Fase B completada → {fase_b_weights}")
 
     # ── FASE C: Descongelar P4 (Stage 2) ─────────────────────────────────
     logger.info("\n" + "─"*50)
-    logger.info("🔓 FASE C — Descongelando Stage 2 (P4, features medias).")
+    logger.info(" FASE C — Descongelando Stage 2 (P4, features medias).")
     logger.info("─"*50)
 
     register_backbone(args.encoder, phase=3, use_coord_attn=True)
@@ -235,11 +235,11 @@ def train(args):
     )
 
     fase_c_weights = os.path.join(project, "FaseC_P4P5", "weights", "last.pt")
-    logger.info(f"✅ Fase C completada → {fase_c_weights}")
+    logger.info(f" Fase C completada → {fase_c_weights}")
 
     # ── FASE D: Full Fine-Tuning ──────────────────────────────────────────
     logger.info("\n" + "─"*50)
-    logger.info("🚀 FASE D — Full Fine-Tuning. Todo el modelo entrena.")
+    logger.info(" FASE D — Full Fine-Tuning. Todo el modelo entrena.")
     logger.info("─"*50)
 
     register_backbone(args.encoder, phase=4, use_coord_attn=True)
@@ -270,7 +270,7 @@ def train(args):
 
     # ── Resumen final ─────────────────────────────────────────────────────
     logger.info("\n" + "=" * 60)
-    logger.info("🏆 ENTRENAMIENTO COMPLETO")
+    logger.info(" ENTRENAMIENTO COMPLETO")
     logger.info(f"   Mejor modelo → {fase_d_best}")
     if hasattr(results, 'results_dict'):
         m = results.results_dict
@@ -305,4 +305,4 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     best_model = train(args)
-    print(f"\n✅ Mejor modelo guardado en: {best_model}")
+    print(f"\n Mejor modelo guardado en: {best_model}")

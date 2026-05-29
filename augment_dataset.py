@@ -47,7 +47,7 @@ def process_images(input_dir, output_dir, mode, num_augments, size):
     files = [f for f in Path(input_dir).rglob("*") if f.suffix.lower() in exts]
     
     if not files:
-        print(f"❌ No se encontraron imágenes en {input_dir}")
+        print(f" No se encontraron imágenes en {input_dir}")
         return
 
     os.makedirs(output_dir, exist_ok=True)
@@ -75,9 +75,9 @@ def process_images(input_dir, output_dir, mode, num_augments, size):
                 aug_img.save(out_path, format="JPEG", quality=95)
                 
         except Exception as e:
-            print(f"\n⚠️ Error procesando {img_path.name}: {e}")
+            print(f"\n Error procesando {img_path.name}: {e}")
 
-    print("\n✅ Proceso completado exitosamente.")
+    print("\n Proceso completado exitosamente.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Herramienta de Data Augmentation para SojAI (Hojas y Texturas)")

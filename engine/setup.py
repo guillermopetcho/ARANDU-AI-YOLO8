@@ -194,7 +194,9 @@ def make_eval_subset_loader(eval_ds, subset_size: int, num_workers: int, batch_s
     indices = torch.randperm(len(eval_ds))[:min(subset_size, len(eval_ds))].tolist()
     return DataLoader(
         Subset(eval_ds, indices), batch_size=batch_size,
-        num_workers=num_workers, pin_memory=True
+        num_workers=num_workers, pin_memory=True,
+        persistent_workers=(num_workers > 0),
+        prefetch_factor=2 if num_workers > 0 else None
     )
 
 
@@ -241,7 +243,11 @@ def build_dataloaders(CONFIG, is_distributed, rank):
     
     # C3 FIX: Usar make_eval_subset_loader() para permitir rerandomización periódica.
     eval_train_loader = make_eval_subset_loader(eval_ds, CONFIG["eval"]["subset_size"], eval_workers, eval_batch_size)
-    eval_val_loader = DataLoader(val_ds, batch_size=eval_batch_size, num_workers=eval_workers, pin_memory=True)
+    eval_val_loader = DataLoader(
+        val_ds, batch_size=eval_batch_size, num_workers=eval_workers, 
+        pin_memory=True, persistent_workers=(eval_workers > 0),
+        prefetch_factor=2 if eval_workers > 0 else None
+    )
 
     return train_loader, eval_train_loader, eval_val_loader, eval_ds, val_ds
 
