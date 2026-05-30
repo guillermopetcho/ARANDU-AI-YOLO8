@@ -60,6 +60,21 @@ def get_global_transforms(global_size=640, aug_cfg=None):
       - global_rotation_p: P(RandomRotation ±15°). Las hojas son isótropas — rotar es válido.
     """
     aug = aug_cfg or {}
+    
+    # Opcion para desactivar augmentations
+    disable_aug = aug.get('disable_online_augmentation', False)
+    
+    if disable_aug:
+        # Pipeline básico sin distorsiones, solo recorte aleatorio suave para evitar colapso de MoCo
+        def _make_disabled_pipeline():
+            return T.Compose([
+                T.RandomResizedCrop(global_size, scale=(0.8, 1.0)), # Solo recorte leve
+                T.RandomHorizontalFlip(),
+                T.ToTensor(),
+                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        return _make_disabled_pipeline(), _make_disabled_pipeline()
+
     hue             = aug.get('hue', 0.02)
     grayscale_p     = aug.get('grayscale_p', 0.05)
     blur_p          = aug.get('global_blur_p', 0.40)
@@ -98,6 +113,23 @@ def get_local_transforms(local_size=128, ultra_size=96, aug_cfg=None):
                        micro-texturas de frog_eye y mosaic.
     """
     aug = aug_cfg or {}
+    
+    # Opcion para desactivar augmentations
+    disable_aug = aug.get('disable_online_augmentation', False)
+    
+    if disable_aug:
+        # Pipeline básico sin distorsiones para crops
+        def _make_disabled_local(size, scale):
+            return T.Compose([
+                T.RandomResizedCrop(size, scale=scale), # Es necesario para generar las vistas
+                T.RandomHorizontalFlip(),
+                T.ToTensor(),
+                T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+            ])
+        t_local = [_make_disabled_local(local_size, (0.08, 0.35)) for _ in range(4)]
+        t_ultra = [_make_disabled_local(ultra_size, (0.04, 0.12)) for _ in range(1)]
+        return t_local + t_ultra
+
     hue         = aug.get('hue', 0.01)
     grayscale_p = aug.get('grayscale_p', 0.05)
     blur_p      = aug.get('local_blur_p', 0.30)

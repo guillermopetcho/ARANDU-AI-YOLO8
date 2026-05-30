@@ -1,7 +1,7 @@
 """
 train_yolo_cls.py — Entrenamiento de Clasificación YOLO con AranduBackbone SSL
 
-Entrena YOLOv8 en modo de clasificación pura usando carpetas de imágenes.
+Entrena YOLO26 en modo de clasificación pura usando carpetas de imágenes.
 """
 
 import argparse

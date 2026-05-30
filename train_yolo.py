@@ -47,7 +47,7 @@ def register_backbone(encoder_path: str, phase: int = 1, use_coord_attn: bool = 
     """Registra AranduYOLOWrapper en el espacio de nombres de Ultralytics.
 
     Ultralytics instancia el backbone por nombre de clase desde el YAML.
-    Hay que inyectar la clase ANTES de llamar a YOLO("arandu_yolov8.yaml").
+    Hay que inyectar la clase ANTES de llamar a YOLO("arandu_yolo26.yaml").
     """
     class AranduYOLOWrapper(AranduBackbone):
         def __init__(self, *args, **kwargs):
@@ -147,7 +147,7 @@ def train(args):
     logger.info("─"*50)
 
     register_backbone(args.encoder, phase=1, use_coord_attn=True)
-    model = YOLO("arandu_yolov8.yaml")
+    model = YOLO("arandu_yolo26.yaml")
     lr_A  = apply_phase(model, phase=1, lr=base_lr)
 
     model.train(

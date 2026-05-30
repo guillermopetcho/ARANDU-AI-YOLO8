@@ -11,13 +11,13 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     """
     
     # =========================================================
-    # MODELO 1: BASELINE YOLOv8 (O YOLO26)
+    # MODELO 1: BASELINE YOLO26
     # =========================================================
     print("\n" + "="*50)
     print(" INICIANDO MODELO 1: BASELINE PURO")
     print("="*50)
-    # Usar yolov8n.yaml o yolo26.yaml dependiendo de tu versión
-    model1 = YOLO("yolov8n.yaml") 
+    # Usar yolo26n.yaml
+    model1 = YOLO("yolo26n.yaml") 
     model1.train(
         data=data_yaml, 
         epochs=epochs, 
@@ -50,7 +50,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperNoGate, \
         "[M3] Registro de AranduYOLOWrapper (NoCoordAtt) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
-    model2 = YOLO("arandu_yolov8.yaml")
+    model2 = YOLO("arandu_yolo26.yaml")
     # Fase 1: congelar backbone, solo adaptadores entrenan
     for name, param in model2.model.named_parameters():
         if 'backbone' in name:
@@ -87,7 +87,7 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
     assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperGate, \
         "[M3] Registro de AranduYOLOWrapper (CoordAtt) en nn_modules falló. Verifica compatibilidad de Ultralytics."
     
-    model3 = YOLO("arandu_yolov8.yaml")
+    model3 = YOLO("arandu_yolo26.yaml")
     # Fase 1: congelar backbone, solo adaptadores entrenan
     for name, param in model3.model.named_parameters():
         if 'backbone' in name:

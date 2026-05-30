@@ -1,6 +1,6 @@
 # 🌿 ARANDU-AI — Detector de Enfermedades en Soja (SSL + YOLO)
 
-Pipeline de investigación de grado producción para la detección de enfermedades foliares en soja, combinando aprendizaje auto-supervisado (MoCo v3) con detección de objetos (YOLOv8).
+Pipeline de investigación de grado producción para la detección de enfermedades foliares en soja, combinando aprendizaje auto-supervisado (MoCo v3) con detección de objetos (YOLO26).
 
 ---
 
@@ -10,7 +10,7 @@ El sistema tiene dos etapas:
 
 1. **AranduSSL** — Preentrenamiento auto-supervisado del backbone sobre imágenes de soja sin etiquetas, usando MoCo v3 con Multi-Crop DINO-style y un controlador adaptativo (AAC v3) que regula temperatura, momentum y LR en función del estado del espacio latente.
 
-2. **ARANDU-YOLO** — Detector YOLOv8 que reemplaza su backbone estándar por el encoder MoCo preentrenado, conectado al neck PAN-FPN mediante adaptadores espaciales con **Context Gate** aprendible por píxel.
+2. **ARANDU-YOLO** — Detector YOLO26 que reemplaza su backbone estándar por el encoder MoCo preentrenado, conectado al neck PAN-FPN mediante adaptadores espaciales con **Context Gate** aprendible por píxel.
 
 ---
 
@@ -40,7 +40,7 @@ ENCODER_YOLO/
 │   └── corrupt_dataset.py      ← Generador de imágenes corruptas para stress-test
 ├── tests/test_scheduler.py     ← Tests del scheduler
 ├── ablation_runner.py          ← Orquestador del estudio de ablación (3 modelos)
-├── arandu_yolov8.yaml          ← Arquitectura YOLO con AranduBackbone
+├── arandu_yolo26.yaml          ← Arquitectura YOLO con AranduBackbone
 └── train.py                    ← Entry point del pipeline SSL
 ```
 
@@ -74,7 +74,7 @@ python ablation_runner.py \
 ```
 
 Entrena secuencialmente con seed=42 idéntico:
-- **M1 — Baseline:** YOLOv8n puro
+- **M1 — Baseline:** YOLO26n puro
 - **M2 — Híbrido Rígido:** AranduBackbone sin Context Gate (α fijo en 0.5)
 - **M3 — Híbrido Adaptativo:** AranduBackbone con Context Gate learnable ← objetivo principal
 

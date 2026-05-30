@@ -21,7 +21,7 @@ setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWr
 setattr(tasks, 'AranduYOLOWrapper', AranduYOLOWrapper)
 
 import yaml
-with open("arandu_yolov8.yaml", "r") as f:
+with open("arandu_yolo26.yaml", "r") as f:
     d = yaml.safe_load(f)
 
 try:
