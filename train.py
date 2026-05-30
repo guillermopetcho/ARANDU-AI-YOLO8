@@ -5,6 +5,7 @@ import logging
 import csv
 import yaml
 import json
+import argparse
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -23,12 +24,12 @@ from engine.setup import (
     resolve_kaggle_paths, make_eval_subset_loader, 
     build_dataloaders, build_model
 )
-# C1 FIX: Funciones de control extraídas a engine/loop.py
 from engine.loop import handle_evaluation, handle_rollback
 from engine.checkpoint import (
     get_latest_valid_checkpoint, build_checkpoint_dict, 
     save_checkpoint, load_checkpoint
 )
+from engine.meta_controller import MetaController
 from evaluation.linear_probe import run_linear_probe
 from utils.metrics import get_module_stats
 from models.moco import ModelBase
@@ -60,6 +61,54 @@ def main():
 
     with open(config_path, "r") as f:
         CONFIG = yaml.safe_load(f)
+
+    # --- INYECCIÓN DINÁMICA DE CONFIGURACIÓN SEGÚN RESOLUCIÓN ---
+    parser = argparse.ArgumentParser(description="AranduSSL MoCo Training")
+    parser.add_argument("--imgsz", type=int, choices=[384, 512, 640], default=384,
+                        help="Resolución base. Ajusta dinámicamente el dataset y los hiperparámetros.")
+    parser.add_argument("--dataset_name", type=str, default="",
+                        help="Sobrescribir el nombre de la carpeta del dataset en Kaggle (opcional)")
+    parser.add_argument("--prev_metrics", type=str, default="",
+                        help="Ruta al JSON de métricas de la resolución anterior para heredar conocimiento semántico.")
+    args, _ = parser.parse_known_args()
+
+    meta = MetaController(args.imgsz, args.prev_metrics)
+    profile = meta.build_curriculum_profile()
+
+    # Inyección de hiperparámetros curriculares
+    CONFIG["moco"]["global_crop_size"] = profile["global_crop_size"]
+    CONFIG["moco"]["local_crop_size"] = profile["local_crop_size"]
+    CONFIG["training"]["batch_size"] = profile["batch_size"]
+    CONFIG["training"]["warmup_epochs"] = profile["warmup_epochs"]
+    CONFIG["moco"]["local_loss_weight"] = profile["local_loss_weight"]
+    CONFIG["moco"]["num_local_crops"] = profile["num_local_crops"]
+
+    # Ajustar grad_accum_steps para mantener EffBatch ≈ 256
+    gpus = world_size if is_distributed else 1
+    target_eff_batch = 256
+    CONFIG["training"]["grad_accum_steps"] = max(1, target_eff_batch // (profile["batch_size"] * gpus))
+
+    # Inyección de Paths Dinámicos según la resolución
+    # Mantenemos las carpetas por defecto compatibles con el MetaController
+    default_datasets = {384: "textura-base-correcta", 512: "dataset-sojai-512", 640: "dataset-sojai-640"}
+    ds_name = args.dataset_name if args.dataset_name else default_datasets[args.imgsz]
+    base_path = f"/kaggle/input/datasets/joaquinignaciopetcho/{ds_name}"
+    
+    CONFIG["paths"]["dataset_root"] = f"{base_path}/train"
+    CONFIG["paths"]["eval_train_root"] = f"{base_path}/train"
+    CONFIG["paths"]["eval_val_root"] = f"{base_path}/val"
+    CONFIG["paths"]["checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_checkpoint.pth"
+    CONFIG["paths"]["best_checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_best.pth"
+    CONFIG["paths"]["encoder_export_path"] = f"/kaggle/working/moco_encoder_{args.imgsz}_ready.pth"
+    CONFIG["paths"]["metrics_path"] = f"/kaggle/working/ssl_{args.imgsz}_metrics.json"
+    CONFIG["paths"]["index_cache_path"] = f"/kaggle/working/train_{args.imgsz}_index.npy"
+
+    if rank == 0:
+        print(f"\n[*] PERFIL DINÁMICO ACTIVADO: {args.imgsz}px")
+        print(f"    - Dataset: {ds_name}")
+        print(f"    - Batch: {profile['batch_size']}, Accum: {CONFIG['training']['grad_accum_steps']} (EffBatch {profile['batch_size'] * CONFIG['training']['grad_accum_steps'] * gpus})")
+        print(f"    - Global Crop: {profile['global_crop_size']}, Local Crop: {profile['local_crop_size']}")
+        print(f"    - Nivel Semántico: {meta.get_summary_string()}\n")
 
     if rank == 0:
         CONFIG["paths"] = resolve_kaggle_paths(CONFIG["paths"], rank)
@@ -275,7 +324,11 @@ def main():
                             writer.writeheader()
                         writer.writerow(p_stats)
 
-            logger.info(f"Ep {epoch+1} | Loss {metrics['loss']:.3f} | U: {metrics['unif']:.2f} | Std: {metrics['std']:.3f} | Norm: {metrics['norm']:.2f} | QStd: {metrics['queue_std']:.3f} | Pos: {metrics['pos_sim']:.2f} | Neg: {metrics['neg_sim']:.2f}")
+            logger.info(f"Ep {epoch+1} | Loss: {metrics['loss']:.3f} | U: {metrics['unif']:.2f} | Std: {metrics['std']:.3f} | ⚙️ Adapting -> Tau: {controller.tau:.4f}, Mom: {controller.current_m:.4f}, LR_Scale: {controller.lr_scale:.2f}")
+            meta.update_dynamic_state(epoch, metrics, curr_acc)
+            # Sync dynamic curriculum updates (e.g. dropping local_loss_weight mid-training)
+            trainer.local_loss_weight = meta.curriculum_params["local_loss_weight"]
+            logger.info(meta.get_summary_string())
 
             if use_wandb:
                 try:

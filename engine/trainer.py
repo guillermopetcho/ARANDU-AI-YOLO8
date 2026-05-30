@@ -35,6 +35,7 @@ class MoCoTrainer:
         epoch_loss, pos_sum, neg_sum, align_sum, unif_sum, std_sum = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps = 0.0, 0.0, 0.0, 0
         norm_sum, queue_std_sum = 0.0, 0.0
+        global_loss_sum, local_loss_sum = 0.0, 0.0
         valid_steps = 0
         # R-5 FIX: Contador de batches válidos (no-NaN) dentro de la ventana de acumulación
         # actual. Necesario para calcular accum_count correctamente cuando hay batches NaN
@@ -237,6 +238,8 @@ class MoCoTrainer:
             # === Métricas === (solo si q y k fueron asignados en este step)
             if q is not None:
                 epoch_loss += loss.item()
+                global_loss_sum += loss_global.item()
+                local_loss_sum += loss_local.item() if isinstance(loss_local, torch.Tensor) and loss_local.numel() > 0 else 0.0
                 valid_steps += 1  # L1 FIX: Solo contar batches procesados exitosamente
                 with torch.no_grad():
                     metrics_step = compute_metrics(q, k)
@@ -259,13 +262,13 @@ class MoCoTrainer:
             metrics_tensor = torch.tensor([
                 epoch_loss, pos_sum, neg_sum, align_sum, unif_sum, std_sum,
                 pos_sim_sum, neg_sim_sum, grad_norm_sum, float(grad_steps), float(valid_steps),
-                norm_sum, queue_std_sum
+                norm_sum, queue_std_sum, global_loss_sum, local_loss_sum
             ], device=self.device, dtype=torch.float32)
             dist.all_reduce(metrics_tensor, op=dist.ReduceOp.SUM)
             
             epoch_loss, pos_sum, neg_sum, align_sum, unif_sum, std_sum, \
                 pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps, valid_steps, \
-                norm_sum, queue_std_sum = metrics_tensor.tolist()
+                norm_sum, queue_std_sum, global_loss_sum, local_loss_sum = metrics_tensor.tolist()
             grad_steps = int(grad_steps)
             # Usar la suma total de pasos en todos los procesos como denominador
             num_steps = max(1, int(valid_steps))
@@ -289,6 +292,8 @@ class MoCoTrainer:
 
         return {
             'loss': epoch_loss / num_steps,
+            'global_loss': global_loss_sum / num_steps,
+            'local_loss': local_loss_sum / num_steps,
             'pos': pos_sum / num_steps,
             'neg': neg_sum / num_steps,
             'margin': (pos_sum - neg_sum) / num_steps,
