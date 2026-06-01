@@ -61,7 +61,7 @@ def evaluate():
         # Se falla explícitamente con instrucciones claras en lugar de intentar un path
         # que con alta probabilidad no existe en el entorno del usuario.
         print(f" Error: No se encontró un directorio de validación válido en: '{val_dir}'")
-        print(f"   Verifica 'paths.eval_val_root' en config/moco.yaml y que el dataset esté montado.")
+        print("   Verifica 'paths.eval_val_root' en config/moco.yaml y que el dataset esté montado.")
         sys.exit(1)
     print(f"[*] Cargando dataset desde: {val_dir}")
     # Pasar el data_yaml para obtener nombres de clase reales (no dummies)
@@ -76,7 +76,7 @@ def evaluate():
     class_names = val_ds.classes
     num_classes = len(class_names)
     if any(c.startswith('Class_') for c in class_names):
-        print(f"[!] ADVERTENCIA: Se usaron clases genéricas (Class_N). Verifica 'paths.data_yaml' en moco.yaml.")
+        print("[!] ADVERTENCIA: Se usaron clases genéricas (Class_N). Verifica 'paths.data_yaml' en moco.yaml.")
     print(f"[*] Clases detectadas ({num_classes}): {class_names}")
 
     # 3. Reconstruir el Modelo
@@ -87,7 +87,7 @@ def evaluate():
     for label, path in [("Encoder", encoder_path), ("Head lineal", head_path)]:
         if not os.path.exists(path):
             print(f"\u274c Error: {label} no encontrado en '{path}'.")
-            print(f"   Ejecuta train.py primero para generar los pesos.")
+            print("   Ejecuta train.py primero para generar los pesos.")
             sys.exit(1)
 
     print(f"[*] Cargando Encoder: {encoder_path}")

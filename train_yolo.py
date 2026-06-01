@@ -58,6 +58,10 @@ def register_backbone(encoder_path: str, phase: int = 1, use_coord_attn: bool = 
 
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapper)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapper)
+    
+    # FIX: Inject into tasks for globals() access during parse_model
+    import ultralytics.nn.tasks
+    setattr(sys.modules['ultralytics.nn.tasks'], 'AranduYOLOWrapper', AranduYOLOWrapper)
     logger.info(f" AranduYOLOWrapper registrado — fase={phase}, coord_attn={use_coord_attn}")
     return AranduYOLOWrapper
 

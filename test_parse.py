@@ -20,7 +20,9 @@ class AranduYOLOClsWrapper(AranduBackbone):
 
 setattr(nn_modules, 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
 setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
+import ultralytics.nn.tasks
+setattr(sys.modules['ultralytics.nn.tasks'], 'AranduYOLOClsWrapper', AranduYOLOClsWrapper)
 
 d = {'nc': 5, 'scales': {'n': [1.0, 1.0, 1024]}, 'backbone': [[-1, 1, 'AranduYOLOClsWrapper', []]], 'head': [[-1, 1, 'Classify', [5]]]}
-model, save = parse_model(d, ch=[3])
+model, save = parse_model(d, ch=3)
 print("Parseo exitoso!")

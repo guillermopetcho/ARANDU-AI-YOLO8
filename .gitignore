@@ -1,0 +1,50 @@
+# Entornos virtuales
+venv/
+env/
+.env
+
+# Caché de Python y testing
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs y bases de datos generadas por el proyecto AranduSSL
+reference_db*.pt
+ssl_metrics*.json
+*_log.csv
+*_projector.csv
+train_index.npy
+*_class_names.json
+*.tmp
+
+# Pesos de modelos (Checkpoints y Encoders)
+*.pth
+*.pt
+*checkpoint*.pth
+*encoder_ready*.pth
+*_head.pth
+
+# Directorios de salidas y experimentos de Ultralytics/YOLO
+runs/
+Ablation_SojAI/
+AranduYOLO_runs/
+wandb/
+
+# Imágenes de evaluación y métricas
+confusion_matrix.png
+alpha_heatmaps*.png
+*.jpg
+*.png
+
+# Datasets (para que no se suban accidentalmente las carpetas de datos)
+datasets/
+data/
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store

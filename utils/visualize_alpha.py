@@ -68,7 +68,7 @@ def generate_alpha_heatmaps(image_path, model_path, save_path="alpha_heatmaps.pn
             x1, y1, x2, y2 = map(int, box)
             mask_bbox[y1:y2, x1:x2] = True
             
-    print(f"\n📊 VALIDACIÓN CUANTITATIVA DEL GATE (BBox vs Fondo):")
+    print("\n📊 VALIDACIÓN CUANTITATIVA DEL GATE (BBox vs Fondo):")
     
     fig, axes = plt.subplots(1, 4, figsize=(24, 6))
     
@@ -96,7 +96,7 @@ def generate_alpha_heatmaps(image_path, model_path, save_path="alpha_heatmaps.pn
             print(f"  - {scale}: \u03B1 en Lesión (BBox) = {alpha_box:.4f} | \u03B1 en Fondo = {alpha_bg:.4f}")
             
             # Superponer el Heatmap sobre la imagen original
-            im = ax.imshow(img_rgb)
+            ax.imshow(img_rgb)
             hm = ax.imshow(a_map_resized, cmap='jet', alpha=0.5, vmin=0.0, vmax=1.0)
             
             ax.set_title(f"Context Gate \u03B1\nBBox:{alpha_box:.2f} Bg:{alpha_bg:.2f}")

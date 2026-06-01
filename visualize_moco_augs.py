@@ -41,7 +41,7 @@ def main():
     ultra_size  = int(local_size * 0.75)
     aug_cfg = cfg.get('augmentation', {})
 
-    print(f"[*] Cargando configuraciones de augmentation:")
+    print("[*] Cargando configuraciones de augmentation:")
     print(f"    - Global size: {global_size}")
     print(f"    - Local size: {local_size}")
     print(f"    - Parámetros: {aug_cfg}")

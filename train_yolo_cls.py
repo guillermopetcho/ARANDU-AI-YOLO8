@@ -27,7 +27,6 @@ _FREEZE_PHASE = 3
 
 class AranduYOLOClsWrapper(AranduBackbone):
     def __init__(self, *args, **kwargs):
-        global _ENCODER_PATH, _FREEZE_PHASE
         super().__init__(
             moco_checkpoint_path=_ENCODER_PATH,
             freeze_phase=_FREEZE_PHASE,
@@ -105,8 +104,8 @@ def train(args):
     # Cargamos la arquitectura o los pesos según la fase
     model = YOLO(model_init, task="classify")
 
-    # Entrenamos
-    results = model.train(
+        # Entrenamos
+    model.train(
         data      = args.data,
         epochs    = args.epochs,
         imgsz     = args.imgsz,

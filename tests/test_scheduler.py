@@ -148,45 +148,8 @@ class TestCosineDecay:
 
 
 # ---------------------------------------------------------------------------
-# Skip-warmup mode (post-rollback)
+# Skip-warmup mode (obsoleto, removido de build_scheduler)
 # ---------------------------------------------------------------------------
-
-class TestSkipWarmup:
-    def test_skip_mode_starts_at_full_lr(self):
-        """Con skip=True, el LR empieza en 100% del base y decae directamente."""
-        base_lr = 0.01
-        t_steps = 1000
-        c_step  = 0
-
-        model = nn.Linear(5, 5)
-        opt   = torch.optim.SGD(model.parameters(), lr=base_lr)
-        sched = build_scheduler(opt, w_steps=200, t_steps=t_steps,
-                                c_step=c_step, skip=True)
-
-        lr_step0 = opt.param_groups[0]['lr']
-        assert abs(lr_step0 - base_lr) < 1e-7, (
-            f"En modo skip, LR inicial debería ser {base_lr}, got {lr_step0}"
-        )
-
-    def test_skip_mode_lr_is_decreasing(self):
-        """Con skip=True, el LR debe decrecer monótonamente desde el inicio."""
-        base_lr = 0.01
-        t_steps = 500
-
-        model = nn.Linear(5, 5)
-        opt   = torch.optim.SGD(model.parameters(), lr=base_lr)
-        sched = build_scheduler(opt, w_steps=100, t_steps=t_steps,
-                                c_step=0, skip=True)
-
-        lrs = [opt.param_groups[0]['lr']]
-        for _ in range(t_steps):
-            sched.step()
-            lrs.append(opt.param_groups[0]['lr'])
-
-        for i in range(len(lrs) - 1):
-            assert lrs[i] >= lrs[i + 1] - 1e-9, (
-                f"LR no monótono en modo skip: step {i}={lrs[i]:.6f} > step {i+1}={lrs[i+1]:.6f}"
-            )
 
 
 # ---------------------------------------------------------------------------

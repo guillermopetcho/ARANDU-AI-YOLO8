@@ -46,6 +46,8 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
             
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
+    import ultralytics.nn.tasks
+    setattr(sys.modules['ultralytics.nn.tasks'], 'AranduYOLOWrapper', AranduYOLOWrapperNoGate)
     # M3 FIX: verificar que el registro fue exitoso antes de intentar cargar el modelo.
     assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperNoGate, \
         "[M3] Registro de AranduYOLOWrapper (NoCoordAtt) en nn_modules falló. Verifica compatibilidad de Ultralytics."
@@ -83,6 +85,8 @@ def run_ablation(data_yaml, moco_ckpt, epochs=100, batch=16, imgsz=640):
             
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapperGate)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapperGate)
+    import ultralytics.nn.tasks
+    setattr(sys.modules['ultralytics.nn.tasks'], 'AranduYOLOWrapper', AranduYOLOWrapperGate)
     # M3 FIX: misma verificación para el modelo con CoordAtt.
     assert getattr(nn_modules, 'AranduYOLOWrapper', None) is AranduYOLOWrapperGate, \
         "[M3] Registro de AranduYOLOWrapper (CoordAtt) en nn_modules falló. Verifica compatibilidad de Ultralytics."
@@ -149,7 +153,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # --- Validaciones de paths antes de lanzar el estudio ---
-    import os
     errors = []
     if not os.path.isfile(args.data):
         errors.append(f"   --data no encontrado: '{args.data}'")

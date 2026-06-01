@@ -38,7 +38,7 @@ def _make_shared_counter():
         ctx = multiprocessing.get_context(start_method)
         counter = ctx.Value('i', 0)
         return counter
-    except Exception as e:
+    except Exception:
         logger.warning("MoCoDataset: Fallback local counter.")
         return _ThreadSafeFallbackCounter()
 

@@ -25,13 +25,13 @@ with open("arandu_yolo26.yaml", "r") as f:
     d = yaml.safe_load(f)
 
 try:
-    model, save = tasks.parse_model(d, ch=[3])
+    model, save = tasks.parse_model(d, ch=3)
     print("PARSE MODEL SUCCESSFUL")
     
     # Try forward pass
     x = torch.randn(1, 3, 640, 640)
     out = model(x)
     print("FORWARD SUCCESSFUL")
-except Exception as e:
+except Exception:
     import traceback
     traceback.print_exc()

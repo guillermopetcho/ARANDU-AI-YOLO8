@@ -35,7 +35,7 @@ def load_ground_truth(label_path, img_width, img_height):
     return boxes
 
 def evaluate_alpha_on_dataset(model_path, data_yaml):
-    print(f"[*] Inicializando Evaluación Cuantitativa de Escala y Distribución...")
+    print("[*] Inicializando Evaluación Cuantitativa de Escala y Distribución...")
     model = YOLO(model_path)
     extractor = AlphaMapExtractor(model)
     

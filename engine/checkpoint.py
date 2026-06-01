@@ -70,8 +70,6 @@ def get_latest_valid_checkpoint(paths_dict: dict) -> "str | None":
         if p and os.path.exists(p):
             candidates.append(p)
 
-    base_dir = os.path.dirname(paths_dict.get("checkpoint_path", "/kaggle/working"))
-
     valid_ckpts = []
     for p in set(candidates):
         if "resnet" in os.path.basename(p).lower():

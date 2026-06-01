@@ -24,7 +24,6 @@ _ENCODER_PATH = None
 
 class AranduYOLOClsWrapper(AranduBackbone):
     def __init__(self, *args, **kwargs):
-        global _ENCODER_PATH
         super().__init__(
             moco_checkpoint_path=_ENCODER_PATH,
             freeze_phase=4,  # Actualizado para coincidir con el entrenamiento
