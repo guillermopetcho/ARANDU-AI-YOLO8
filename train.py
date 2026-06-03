@@ -101,10 +101,14 @@ def main():
     
     # Auto-detectar nombre de la carpeta de validación
     val_path = f"{base_path}/val"
-    valid_path = f"{base_path}/valid"
-    if not os.path.exists(val_path) and os.path.exists(valid_path):
-        val_path = valid_path
+    for alt_name in ["valid", "test", "train"]:
+        if not os.path.exists(val_path) and os.path.exists(f"{base_path}/{alt_name}"):
+            val_path = f"{base_path}/{alt_name}"
+            break
+            
     CONFIG["paths"]["eval_val_root"] = val_path
+    if rank == 0:
+        print(f"    - Rutas -> Train: {CONFIG['paths']['eval_train_root']} | Val: {val_path}")
     
     CONFIG["paths"]["checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_checkpoint.pth"
     CONFIG["paths"]["best_checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_best.pth"
