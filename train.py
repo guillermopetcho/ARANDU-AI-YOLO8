@@ -70,6 +70,8 @@ def main():
                         help="Sobrescribir el nombre de la carpeta del dataset en Kaggle (opcional)")
     parser.add_argument("--prev_metrics", type=str, default="",
                         help="Ruta al JSON de métricas de la resolución anterior para heredar conocimiento semántico.")
+    parser.add_argument("--probe_only", action="store_true",
+                        help="Saltar el entrenamiento e ir directamente a la evaluación Linear Probe.")
     args, _ = parser.parse_known_args()
 
     meta = MetaController(args.imgsz, args.prev_metrics)
@@ -247,6 +249,10 @@ def main():
     # Batch size seguro para evaluación - consistente con build_dataloaders()
     _eval_bs = min(CONFIG["training"]["batch_size"], 64)
     EVAL_SUBSET_REFRESH_FREQ = 5
+
+    if getattr(args, 'probe_only', False):
+        if rank == 0: logger.info(" [!] --probe_only flag detectado: Saltando entrenamiento.")
+        start_epoch = CONFIG["training"]["epochs"]
 
     for epoch in range(start_epoch, CONFIG["training"]["epochs"]):
         if is_distributed and train_loader.sampler is not None:
