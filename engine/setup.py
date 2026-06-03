@@ -146,7 +146,7 @@ def resolve_kaggle_paths(paths_config, rank=0):
     path_parts = [p for p in dataset_root.split("/") if p]
     if len(path_parts) >= 2 and path_parts[-1] in ["train", "val", "valid", "test"]:
         dataset_folder_name = path_parts[-2]
-        base_to_replace = "/".join(path_parts[:-1]) # ej: /kaggle/.../TEXTURAS-BASE(512X512)
+        base_to_replace = "/" + "/".join(path_parts[:-1]) # ej: /kaggle/.../TEXTURAS-BASE(512X512)
     else:
         dataset_folder_name = path_parts[-1] if path_parts else ""
         base_to_replace = dataset_root

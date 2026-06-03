@@ -15,6 +15,7 @@ import torch.backends.cudnn as cudnn
 logging.getLogger("torch.utils._sympy").setLevel(logging.ERROR)
 logging.getLogger("torch._inductor").setLevel(logging.ERROR)
 from torch.amp import GradScaler
+from pathlib import Path
 
 from engine.trainer import MoCoTrainer
 from engine.scheduler import build_scheduler
@@ -96,19 +97,29 @@ def main():
     ds_name = args.dataset_name if args.dataset_name else default_datasets[args.imgsz]
     base_path = f"/kaggle/input/datasets/joaquinignaciopetcho/{ds_name}"
     
-    CONFIG["paths"]["dataset_root"] = f"{base_path}/train"
-    CONFIG["paths"]["eval_train_root"] = f"{base_path}/train"
+    # Auto-detectar nombre de la carpeta de entrenamiento
+    train_path = f"{base_path}/train"
+    if not os.path.exists(train_path) and os.path.exists(base_path):
+        # Verificar si las imágenes están directo en la base (o en images/)
+        if os.path.exists(f"{base_path}/images"):
+            train_path = base_path # YOLO format fallback
+        elif len(list(Path(base_path).glob("*.jpg"))) > 0 or len(list(Path(base_path).glob("*/*.jpg"))) > 0:
+            train_path = base_path # Directly in base_path
+            
+    CONFIG["paths"]["dataset_root"] = train_path
+    CONFIG["paths"]["eval_train_root"] = train_path
     
     # Auto-detectar nombre de la carpeta de validación
     val_path = f"{base_path}/val"
-    for alt_name in ["valid", "test", "train"]:
-        if not os.path.exists(val_path) and os.path.exists(f"{base_path}/{alt_name}"):
-            val_path = f"{base_path}/{alt_name}"
+    for alt_name in ["valid", "test", "train", ""]:
+        alt_path = f"{base_path}/{alt_name}" if alt_name else base_path
+        if not os.path.exists(val_path) and os.path.exists(alt_path):
+            val_path = alt_path
             break
             
     CONFIG["paths"]["eval_val_root"] = val_path
     if rank == 0:
-        print(f"    - Rutas -> Train: {CONFIG['paths']['eval_train_root']} | Val: {val_path}")
+        print(f"    - Rutas -> Train: {train_path} | Val: {val_path}")
     
     CONFIG["paths"]["checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_checkpoint.pth"
     CONFIG["paths"]["best_checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_best.pth"
