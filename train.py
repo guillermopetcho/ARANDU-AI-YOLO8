@@ -98,7 +98,14 @@ def main():
     
     CONFIG["paths"]["dataset_root"] = f"{base_path}/train"
     CONFIG["paths"]["eval_train_root"] = f"{base_path}/train"
-    CONFIG["paths"]["eval_val_root"] = f"{base_path}/val"
+    
+    # Auto-detectar nombre de la carpeta de validación
+    val_path = f"{base_path}/val"
+    valid_path = f"{base_path}/valid"
+    if not os.path.exists(val_path) and os.path.exists(valid_path):
+        val_path = valid_path
+    CONFIG["paths"]["eval_val_root"] = val_path
+    
     CONFIG["paths"]["checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_checkpoint.pth"
     CONFIG["paths"]["best_checkpoint_path"] = f"/kaggle/working/moco_fase_{args.imgsz}_best.pth"
     CONFIG["paths"]["encoder_export_path"] = f"/kaggle/working/moco_encoder_{args.imgsz}_ready.pth"
