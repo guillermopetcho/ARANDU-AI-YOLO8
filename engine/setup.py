@@ -142,7 +142,15 @@ def resolve_kaggle_paths(paths_config, rank=0):
     if not os.path.isdir("/kaggle/input"):
         return paths_config
 
-    dataset_folder_name = os.path.basename(dataset_root)
+    # El dataset_root usualmente termina en /train. Queremos el nombre de la carpeta padre.
+    path_parts = [p for p in dataset_root.split("/") if p]
+    if len(path_parts) >= 2 and path_parts[-1] in ["train", "val", "valid", "test"]:
+        dataset_folder_name = path_parts[-2]
+        base_to_replace = "/".join(path_parts[:-1]) # ej: /kaggle/.../TEXTURAS-BASE(512X512)
+    else:
+        dataset_folder_name = path_parts[-1] if path_parts else ""
+        base_to_replace = dataset_root
+
     if not dataset_folder_name:
         return paths_config
 
@@ -153,9 +161,8 @@ def resolve_kaggle_paths(paths_config, rank=0):
             break
 
     if found is None:
-        path_parts = dataset_root.rstrip("/").split("/")
-        if len(path_parts) >= 2:
-            dataset_slug = path_parts[-2]
+        if len(path_parts) >= 3:
+            dataset_slug = path_parts[-3]
             for dirpath, dirnames, _ in os.walk("/kaggle/input"):
                 if dataset_slug in dirnames:
                     candidate = os.path.join(dirpath, dataset_slug, dataset_folder_name)
