@@ -73,6 +73,10 @@ def main():
                         help="Ruta al JSON de métricas de la resolución anterior para heredar conocimiento semántico.")
     parser.add_argument("--probe_only", action="store_true",
                         help="Saltar el entrenamiento e ir directamente a la evaluación Linear Probe.")
+    parser.add_argument("--dataset_path", type=str, default="",
+                        help="Ruta explícita al directorio de entrenamiento (ej: /kaggle/input/dataset/train). Bypassea el auto-discovery.")
+    parser.add_argument("--val_path", type=str, default="",
+                        help="Ruta explícita al directorio de validación. Si se omite y se usa --dataset_path, se asume igual al de entrenamiento.")
     args, _ = parser.parse_known_args()
 
     meta = MetaController(args.imgsz, args.prev_metrics)
@@ -91,33 +95,42 @@ def main():
     target_eff_batch = 256
     CONFIG["training"]["grad_accum_steps"] = max(1, target_eff_batch // (profile["batch_size"] * gpus))
 
-    # Inyección de Paths Dinámicos según la resolución
-    # Mantenemos las carpetas por defecto compatibles con el MetaController
-    default_datasets = {384: "textura-base-correcta", 512: "texturas-base512x512/TEXTURAS-BASE(512X512)", 640: "dataset-sojai-640"}
-    ds_name = args.dataset_name if args.dataset_name else default_datasets[args.imgsz]
-    base_path = f"/kaggle/input/datasets/joaquinignaciopetcho/{ds_name}"
-    
-    # Auto-detectar nombre de la carpeta de entrenamiento
-    train_path = f"{base_path}/train"
-    if not os.path.exists(train_path) and os.path.exists(base_path):
-        # Verificar si las imágenes están directo en la base (o en images/)
-        if os.path.exists(f"{base_path}/images"):
-            train_path = base_path # YOLO format fallback
-        elif len(list(Path(base_path).glob("*.jpg"))) > 0 or len(list(Path(base_path).glob("*/*.jpg"))) > 0:
-            train_path = base_path # Directly in base_path
-            
-    CONFIG["paths"]["dataset_root"] = train_path
-    CONFIG["paths"]["eval_train_root"] = train_path
-    
-    # Auto-detectar nombre de la carpeta de validación
-    val_path = f"{base_path}/val"
-    for alt_name in ["valid", "test", "train", ""]:
-        alt_path = f"{base_path}/{alt_name}" if alt_name else base_path
-        if not os.path.exists(val_path) and os.path.exists(alt_path):
-            val_path = alt_path
-            break
-            
-    CONFIG["paths"]["eval_val_root"] = val_path
+    if args.dataset_path:
+        train_path = args.dataset_path
+        val_path = args.val_path if args.val_path else args.dataset_path
+        CONFIG["paths"]["dataset_root"] = train_path
+        CONFIG["paths"]["eval_train_root"] = train_path
+        CONFIG["paths"]["eval_val_root"] = val_path
+        ds_name = os.path.basename(train_path)
+    else:
+        # Inyección de Paths Dinámicos según la resolución
+        # Mantenemos las carpetas por defecto compatibles con el MetaController
+        default_datasets = {384: "textura-base-correcta", 512: "texturas-base512x512/TEXTURAS-BASE(512X512)", 640: "dataset-sojai-640"}
+        ds_name = args.dataset_name if args.dataset_name else default_datasets[args.imgsz]
+        base_path = f"/kaggle/input/datasets/joaquinignaciopetcho/{ds_name}"
+        
+        # Auto-detectar nombre de la carpeta de entrenamiento
+        train_path = f"{base_path}/train"
+        if not os.path.exists(train_path) and os.path.exists(base_path):
+            # Verificar si las imágenes están directo en la base (o en images/)
+            if os.path.exists(f"{base_path}/images"):
+                train_path = base_path # YOLO format fallback
+            elif len(list(Path(base_path).glob("*.jpg"))) > 0 or len(list(Path(base_path).glob("*/*.jpg"))) > 0:
+                train_path = base_path # Directly in base_path
+                
+        CONFIG["paths"]["dataset_root"] = train_path
+        CONFIG["paths"]["eval_train_root"] = train_path
+        
+        # Auto-detectar nombre de la carpeta de validación
+        val_path = f"{base_path}/val"
+        for alt_name in ["valid", "test", "train", ""]:
+            alt_path = f"{base_path}/{alt_name}" if alt_name else base_path
+            if not os.path.exists(val_path) and os.path.exists(alt_path):
+                val_path = alt_path
+                break
+                
+        CONFIG["paths"]["eval_val_root"] = val_path
+        
     if rank == 0:
         print(f"    - Rutas -> Train: {train_path} | Val: {val_path}")
     
