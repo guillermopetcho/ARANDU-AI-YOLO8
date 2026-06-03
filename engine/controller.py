@@ -416,9 +416,6 @@ class TrainingController:
                     if use_pid_tau:
                         tau_max = self.config.get('controller', {}).get('tau_max', 0.25)
                         self.tau += Kp_tau * eU_ctrl + Ki_tau * self.I_U
-                        # Anclaje suave de PID también para evitar drift
-                        tau_target = 0.10
-                        self.tau += 0.01 * (tau_target - self.tau)
                         # Anti-Windup Dinámico
                         if self.tau >= tau_max or self.tau <= 0.05:
                             self.I_U *= 0.9 # Leak cuando está saturado

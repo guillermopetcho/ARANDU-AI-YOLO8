@@ -39,7 +39,7 @@ class AranduYOLOClsWrapper(AranduBackbone):
 
 class AranduClassify(Classify):
     def __init__(self, c2, *args, **kwargs):
-        super().__init__(1024, c2, *args, **kwargs)
+        super().__init__(768, c2, *args, **kwargs)
 
 def register_cls_backbone(encoder_path: str, freeze_phase: int = 3):
     """

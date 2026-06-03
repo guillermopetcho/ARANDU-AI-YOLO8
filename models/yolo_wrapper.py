@@ -343,7 +343,7 @@ class AranduBackbone(nn.Module):
         self.logger.info(f"[AranduBackbone] Fase {phase_desc[phase]}")
 
         # Aplicar modo train/eval correctamente
-        self.train(self.training)
+        self.train(mode=self.training)
 
     def train(self, mode: bool = True):
         """

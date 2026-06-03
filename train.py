@@ -90,7 +90,7 @@ def main():
 
     # Inyección de Paths Dinámicos según la resolución
     # Mantenemos las carpetas por defecto compatibles con el MetaController
-    default_datasets = {384: "textura-base-correcta", 512: "dataset-sojai-512", 640: "dataset-sojai-640"}
+    default_datasets = {384: "textura-base-correcta", 512: "texturas-base512x512/TEXTURAS-BASE(512X512)", 640: "dataset-sojai-640"}
     ds_name = args.dataset_name if args.dataset_name else default_datasets[args.imgsz]
     base_path = f"/kaggle/input/datasets/joaquinignaciopetcho/{ds_name}"
     
@@ -299,7 +299,14 @@ def main():
                     logger.info(" Best Geometric model guardado")
 
             log_buffer.append([
-                epoch+1, metrics['loss'], optimizer.param_groups[0]['lr'], curr_acc,
+                epoch+1, metrics['loss'], optimizer.param_groups[0]['lr'],
+                # BUG-M1 FIX: curr_acc sigue siendo -1 cuando esta époch no tuvo evaluación
+                # (eval_freq > 1). Escribir -1 en la columna knn_acc del CSV corrompe análisis
+                # posteriores (pandas trata -1 como dato válido, no como ausencia de dato).
+                # float('nan') serializa como campo vacío en CSV y es omitido limpiamente
+                # por pandas y WandB, manteniendo la consistencia con el comportamiento
+                # de 'gn' en epochs sin grad_steps (ya usó este patrón en M-2 FIX).
+                curr_acc if curr_acc >= 0 else float('nan'),
                 metrics['pos'], metrics['neg'], metrics['margin'], metrics['align'],
                 metrics['unif'], metrics['pos_sim'], metrics['neg_sim'],
                 controller.history['ratio_norm'][-1] if controller.history['ratio_norm'] else 1.0,

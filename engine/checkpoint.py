@@ -175,6 +175,19 @@ def load_checkpoint(
         controller.best_acc = ckpt.get("best_acc", 0.0)
         controller.warmup_aborted = ckpt.get("warmup_aborted", False)
 
+    # BUG-C1 FIX: lr_step_factor puede haber sido guardado como != 1.0 si el proceso
+    # murió entre save_checkpoint (L289 en train.py) y el bloque de aplicación (L385).
+    # Al reanudar, el optimizer ya fué sanitizado a `lr` base (líneas de abajo), por lo
+    # que aplicar el factor guardado sería incorrecto: el scheduler reconstruido ya
+    # parte del LR correcto. Descartamos el factor pendiente y lo registramos.
+    if controller.lr_step_factor != 1.0:
+        logger.warning(
+            f"⚠️ BUG-C1: lr_step_factor restaurado como {controller.lr_step_factor:.4f} ≠ 1.0. "
+            f"Puede ser un ajuste PID no aplicado de la sesión anterior. "
+            f"Se descarta para evitar doble-aplicación (el scheduler reconstruido ya lo incorpora)."
+        )
+        controller.lr_step_factor = 1.0
+
     global_step = ckpt.get("global_step", 0)
 
     # Sanitizar el optimizer state para que el scheduler tome control limpio
@@ -183,7 +196,13 @@ def load_checkpoint(
         param_group["lr"] = lr
 
     # Reconstruir scheduler y hacer fast-forward determinista
+    # BUG-M3 FIX: El fast-forward es O(global_step). En runs largos (50k+ pasos)
+    # puede tardar varios segundos. Se emite un warning para que el operador sepa.
     scheduler = build_scheduler_fn(optimizer, warmup_steps, total_steps, final_lr_ratio=final_lr_ratio)
+    if global_step > 10_000:
+        logger.warning(
+            f"⏳ Fast-forward del scheduler: {global_step} pasos. Esto puede tardar unos segundos..."
+        )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for _ in range(global_step):

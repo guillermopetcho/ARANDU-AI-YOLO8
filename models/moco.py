@@ -231,7 +231,15 @@ def build_index(root, rank, cache_path):
             _logger.info(f"📁 Índice creado con {len(files)} imágenes.")
     
     if is_dist:
-        dist.barrier(device_ids=[torch.cuda.current_device()])
+        # BUG-C3 FIX: device_ids solo es válido para el backend 'nccl' con CUDA.
+        # En CPU (backend 'gloo') o en entornos de test, dist.barrier(device_ids=...)
+        # lanza RuntimeError o provoca un deadlock silencioso.
+        # Detectamos el backend activo antes de pasar device_ids.
+        _backend = dist.get_backend() if dist.is_initialized() else ""
+        if torch.cuda.is_available() and _backend == "nccl":
+            dist.barrier(device_ids=[torch.cuda.current_device()])
+        else:
+            dist.barrier()
     
     if not os.path.exists(cache_path):
         raise RuntimeError(f"Cache {cache_path} no existe.")

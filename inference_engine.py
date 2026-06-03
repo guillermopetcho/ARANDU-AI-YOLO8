@@ -122,14 +122,21 @@ class AranduInferenceEngine:
         self.head = self.head.to(self.device).eval()
 
     def build_or_load_reference_db(self, force_rebuild=False):
-        # C1 FIX: El cache_path incluye un hash del data_yaml para invalidarlo
-        # automáticamente cuando cambian las clases. Sin esto, un cache generado
-        # con clases dummy (Class_0..N) se reusaba silenciosamente aunque el
-        # data_yaml ya estuviera configurado con los nombres reales.
+        # BUG-AMB-11 FIX: El hash anterior se calculaba sobre la RUTA del data_yaml (un string),
+        # no sobre su CONTENIDO. Si el archivo cambiaba de contenido (nueva clase, renombre)
+        # pero su path permanecía igual, el caché NO se invalidaba y las referencias KNN
+        # quedaban desactualizadas silenciosamente.
+        # Ahora hasheamos el CONTENIDO del archivo si existe, o el string del path como fallback.
         import hashlib
         data_yaml = self.config['paths'].get('data_yaml', '')
-        yaml_hash = hashlib.md5(data_yaml.encode()).hexdigest()[:8]
-        base_cache = "/kaggle/working/reference_db" if "kaggle" in self.config['paths']['eval_train_root'] else "reference_db"
+        if data_yaml and os.path.isfile(data_yaml):
+            with open(data_yaml, 'rb') as _f:
+                yaml_hash = hashlib.md5(_f.read()).hexdigest()[:8]
+        else:
+            yaml_hash = hashlib.md5(data_yaml.encode()).hexdigest()[:8]
+
+        train_dir = self.config['paths'].get('eval_train_root', '')
+        base_cache = "/kaggle/working/reference_db" if "kaggle" in train_dir else "reference_db"
         cache_path = f"{base_cache}_{yaml_hash}.pt"
         
         if os.path.exists(cache_path) and not force_rebuild:
@@ -139,9 +146,16 @@ class AranduInferenceEngine:
             self.reference_labels = data['labels']
         else:
             print("[*] Construyendo base de datos KNN desde Train Dataset (puede demorar)...")
-            train_dir = self.config['paths']['eval_train_root']
-            if not os.path.exists(train_dir):
-                train_dir = "/kaggle/input/datasets/guillermopetcho/fase-cero-capa-1-entrenamiento-640x640/FASE-CERO_CAPA-1-ENTRENAMIENTO_640X640/train"
+            # BUG-M5 FIX: Se eliminó el fallback hardcodeado a un path de Kaggle específico.
+            # El patrón anti-portabilidad fue identificado y removido de evaluate_downstream.py
+            # (R-4 FIX) pero permanecía aquí. Un path con usuario/dataset específico falla
+            # silenciosamente en cualquier entorno que no sea el original.
+            # Fallamos explícitamente con instrucciones claras.
+            if not train_dir or not os.path.exists(train_dir):
+                raise RuntimeError(
+                    f"[InferenceEngine] No se encontró el directorio de training en: '{train_dir}'.\n"
+                    f"  Verifica 'paths.eval_train_root' en config/moco.yaml y que el dataset esté montado."
+                )
             
             # C1 FIX: pasar data_yaml_path para que el dataset use las clases reales
             train_ds = build_eval_dataset(train_dir, transform=self.transform, data_yaml_path=data_yaml or None)

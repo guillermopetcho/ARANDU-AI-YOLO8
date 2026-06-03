@@ -71,6 +71,12 @@ class MoCoTrainer:
             else:
                 local_crops = None  # Placeholder vacío → desactivar multi-crop
 
+            # BUG-C5 FIX: registrar si este step tiene crops válidos, ANTES de entrar
+            # al forward. La guarda posterior (L242) usó loss_local.numel() > 0, que
+            # es trivialmente True para cualquier escalar (torch.zeros([])), por lo
+            # que no detectaba la ausencia real de crops. Esta bandera lo reemplaza.
+            _had_local_crops = local_crops is not None and len(local_crops) > 0
+
             # --- Hiperparámetros dinámicos del Regulador Adaptativo ---
             if self.controller:
                 momentum, temp = self.controller.get_dynamic_hyperparams(global_step, total_steps, self.last_unif)
@@ -143,8 +149,16 @@ class MoCoTrainer:
                             v_local = torch.cat(crops, dim=0).contiguous().to(memory_format=torch.channels_last)
                             q_local = self.model_q(v_local, use_predictor=True)
                             
-                            # Expandir k1 y labels de [B, ...] a [B*N_crops, ...]
-                            # torch.cat concatena secuencialmente, por lo que k1.repeat es el match correcto
+                            # INVARIANTE BUG-C2 (verificado formalmente): el orden de
+                            # k1.repeat(N_crops, 1) COINCIDE con el de torch.cat(crops, dim=0).
+                            #
+                            # crops = [crop_0, crop_1, ..., crop_{N-1}], cada crop_i tiene shape [B, C, H, W].
+                            # torch.cat(crops, dim=0) produce:
+                            #   [img0_c0, img1_c0,..,imgB_c0, img0_c1,..,imgB_c1,...,img0_cN,..,imgB_cN]
+                            # k1.repeat(N_crops, 1) produce (k1 shape [B, D]):
+                            #   [img0_key, img1_key,..,imgB_key, img0_key,..,imgB_key,...]
+                            # => q_local[i] y k1_exp[i] siempre apuntan al mismo img_idx. ✓
+                            # NO modificar este repeat sin actualizar el invariante.
                             k1_exp = k1.repeat(N_crops, 1)
                             labels_local = labels.repeat(N_crops)
                             
@@ -239,7 +253,11 @@ class MoCoTrainer:
             if q is not None:
                 epoch_loss += loss.item()
                 global_loss_sum += loss_global.item()
-                local_loss_sum += loss_local.item() if isinstance(loss_local, torch.Tensor) and loss_local.numel() > 0 else 0.0
+                # BUG-C5 FIX: La guarda anterior (loss_local.numel() > 0) era trivialmente True
+                # para cualquier escalar torch.zeros([]) → nunca detectaba la ausencia real de crops.
+                # Usamos _had_local_crops (bandera booleana explícita definida al inicio del step)
+                # que refleja fielmente si se procesaron crops en este batch.
+                local_loss_sum += loss_local.item() if _had_local_crops else 0.0
                 valid_steps += 1  # L1 FIX: Solo contar batches procesados exitosamente
                 with torch.no_grad():
                     metrics_step = compute_metrics(q, k)

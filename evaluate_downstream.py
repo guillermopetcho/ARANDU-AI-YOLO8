@@ -47,7 +47,10 @@ def evaluate():
     eval_size = config['moco'].get('global_crop_size', 384)
     # BUG-13 FIX: num_workers y batch_size desde config, no hardcodeados.
     n_workers  = config['training'].get('num_workers', 4)
-    eval_batch = max(config['training'].get('batch_size', 16), 32)
+    # BUG-AMB-10 FIX: max() forzaba eval_batch a ≥32 incluso cuando training batch_size=8
+    # (fase 512px), causando OOM en GPUs con poca VRAM. engine/setup.py usa min() correctamente.
+    # Usamos el mismo patrón: cap superior seguro en 64, sin exceder el batch de entrenamiento.
+    eval_batch = min(config['training'].get('batch_size', 16), 64)
     use_amp    = config['training'].get('use_amp', False)
     print(f"[*] Evaluando en dispositivo: {device} | eval_size={eval_size}px | amp={use_amp}")
 
