@@ -176,7 +176,7 @@ def resolve_kaggle_paths(paths_config, rank=0):
                            f"Path original: {dataset_root}")
         return paths_config
 
-    old_root = dataset_root
+    old_root = base_to_replace if 'base_to_replace' in locals() else dataset_root
     new_root = found
     if rank == 0:
         logger.info(f"🔍 Auto-discovery: dataset encontrado en {new_root}")
