@@ -77,6 +77,10 @@ def main():
                         help="Ruta explícita al directorio de entrenamiento (ej: /kaggle/input/dataset/train). Bypassea el auto-discovery.")
     parser.add_argument("--val_path", type=str, default="",
                         help="Ruta explícita al directorio de validación. Si se omite y se usa --dataset_path, se asume igual al de entrenamiento.")
+    parser.add_argument("--resume_checkpoint", type=str, default="",
+                        help="Ruta a un checkpoint .pth para reanudar o heredar pesos (ej: moco_fase_384_best.pth).")
+    parser.add_argument("--transfer_weights", type=str, default="",
+                        help="Ruta a un checkpoint .pth para heredar pesos (ej: fase anterior) y empezar desde epoch 0.")
     args, _ = parser.parse_known_args()
 
     meta = MetaController(args.imgsz, args.prev_metrics)
@@ -242,7 +246,25 @@ def main():
     #            3. best_checkpoint_path existente (fallback),
     #            4. None = empezar desde cero.
     resume_ckpt_cfg = CONFIG["paths"].get("resume_checkpoint", "").strip()
-    if resume_ckpt_cfg and os.path.exists(resume_ckpt_cfg):
+    
+    if args.transfer_weights and os.path.exists(args.transfer_weights):
+        if rank == 0: logger.info(f" 🧬 Heredando pesos de la fase anterior: {args.transfer_weights}")
+        from engine.checkpoint import load_weights_for_rollback
+        load_weights_for_rollback(
+            path=args.transfer_weights,
+            model_q=model_q, model_k=model_k,
+            optimizer=optimizer, scaler=scaler, queue=queue,
+            is_compiled=is_compiled, is_distributed=is_distributed
+        )
+        # Clear optimizer state to start fresh for the new phase
+        optimizer.state.clear()
+        for param_group in optimizer.param_groups:
+            param_group["initial_lr"] = lr
+            param_group["lr"] = lr
+        ckpt_to_load = None
+    elif args.resume_checkpoint and os.path.exists(args.resume_checkpoint):
+        ckpt_to_load = args.resume_checkpoint
+    elif resume_ckpt_cfg and os.path.exists(resume_ckpt_cfg):
         ckpt_to_load = resume_ckpt_cfg
     elif ckpt_path and os.path.exists(ckpt_path):
         ckpt_to_load = ckpt_path
