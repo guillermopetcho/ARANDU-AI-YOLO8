@@ -131,11 +131,8 @@ class SpatialFeatureAdapter(nn.Module):
         else:
             self.shortcut = nn.Identity()
 
-        # 5. Context Gate — combinación convexa aprendible (contenido-dependiente)
-        self.context_gate = nn.Sequential(
-            nn.Conv2d(out_channels, 1, kernel_size=1, bias=True),
-            nn.Sigmoid()
-        )
+        # 5. Residual Gate — Parameter escalar inicializado en 0 (Y = X + beta * T(X))
+        self.beta = nn.Parameter(torch.zeros(1))
 
         self._init_weights()
 
@@ -145,15 +142,12 @@ class SpatialFeatureAdapter(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-        # Context Gate inicializado a 0 → Sigmoid(0)=0.5 → mezcla neutra
-        nn.init.constant_(self.context_gate[0].weight, 0)
-        nn.init.constant_(self.context_gate[0].bias, 0)
+        # Beta se inicializa explícitamente en 0 en la declaración del Parameter
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shortcut   = self.shortcut(x)
         local_feat = self.coord_attn(self.local_context(self.compress(x)))
-        alpha      = self.context_gate(shortcut)  # [B, 1, H, W] ∈ (0, 1)
-        return alpha * shortcut + (1.0 - alpha) * local_feat
+        return shortcut + self.beta * local_feat
 
 
 # ---------------------------------------------------------------------------

@@ -489,6 +489,12 @@ def main():
         best_ckpt_file = CONFIG["paths"]["best_checkpoint_path"]
         if not os.path.exists(best_ckpt_file):
             best_ckpt_file = CONFIG["paths"].get("checkpoint_path", "")
+            
+        # Si se usa --probe_only junto con --transfer_weights, evaluar el modelo base directamente
+        if args.probe_only and args.transfer_weights and os.path.exists(args.transfer_weights):
+            best_ckpt_file = args.transfer_weights
+            logger.info(f" Usando pesos base para la evaluación: {best_ckpt_file}")
+            
         if not best_ckpt_file or not os.path.exists(best_ckpt_file):
             logger.warning(" No se encontró checkpoint para Linear Probe. Saltando.")
         else:
