@@ -287,14 +287,18 @@ class ModelBase(nn.Module):
         h = self.encoder(x)  # Shape: [B, 768]
         z = self.projector(h) # Shape: [B, 512]
         
+        # HIGH-4 FIX: z_norm (pre-normalización) es la señal diagnóstica correcta para
+        # detectar colapso del projector (z_norm → 0). Se usa SIEMPRE como norma reportada,
+        # incluso cuando use_predictor=True, porque p_norm (norma del predictor) es engañosa:
+        # el predictor recibe z ya L2-normalizado, así que su norma de salida solo refleja
+        # la escala de los pesos del predictor, no la salud del espacio latente.
         z_norm = z.norm(dim=1).mean()
         z = F.normalize(z.float(), dim=1, eps=1e-6).to(z.dtype)
         
         if use_predictor:
             p = self.predictor(z) # Shape: [B, 512]
-            p_norm = p.norm(dim=1).mean()
             p = F.normalize(p.float(), dim=1, eps=1e-6).to(p.dtype)
-            if return_norm: return p, p_norm
+            if return_norm: return p, z_norm  # HIGH-4 FIX: z_norm, no p_norm
             return p
         
         if return_norm: return z, z_norm

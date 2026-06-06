@@ -137,5 +137,11 @@ def handle_rollback(
 
     trainer.scheduler = scheduler
     controller.warmup_aborted = True
-    if rank == 0: logger.info("✅ Rollback completado. Iniciando fase de Decaimiento Cosenoidal.")
+    # CRIT-3 FIX: Resetear lr_scale tras rollback. El modelo fue restaurado a su mejor
+    # versión, pero lr_scale podía estar en 0.25 (castigado por el PID). Sin este reset,
+    # la próxima época aplica lr_step_factor derivado del lr_scale stale, causando un
+    # doble castigo sobre un modelo recién restaurado.
+    controller.lr_scale = 1.0
+    controller.lr_step_factor = 1.0
+    if rank == 0: logger.info("✅ Rollback completado. LR_scale reseteado a 1.0. Iniciando fase de Decaimiento Cosenoidal.")
     return global_step  # Retornar el step actual (monótono), NO el del checkpoint

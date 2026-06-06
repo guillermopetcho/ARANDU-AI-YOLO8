@@ -1,10 +1,8 @@
-import os
 import json
 import random
 import argparse
 from pathlib import Path
 import numpy as np
-import scipy.stats
 from sklearn.cluster import KMeans
 
 import torch
@@ -65,7 +63,7 @@ def compute_class_prototypes(dataset_path, model, device, base_t, K=3, max_per_c
                 img = Image.open(p).convert('RGB')
                 e = F.normalize(model(base_t(img).unsqueeze(0).to(device)), dim=-1)
                 embs.append(e.cpu().numpy()[0])
-            except: pass
+            except Exception: pass
         if len(embs) >= K:
             kmeans = KMeans(n_clusters=K, random_state=42, n_init='auto').fit(embs)
             centers = torch.tensor(kmeans.cluster_centers_).to(device)
@@ -83,34 +81,51 @@ def get_proto_affinities(e, prototypes_dict):
     return affinities
 
 @torch.no_grad()
-def audit_images_by_class(img_paths, model, device, global_size, local_size, local_scale, prototypes, delta=0.10, num_locals=10, k_nn=10):
-    global_t, local_t, _ = get_transforms(global_size, local_size, local_scale)
+def build_deterministic_bank(img_paths, model, device, base_t):
+    """Construye el bank de embeddings globales UNA sola vez con transform determinístico.
     
-    class_metrics = {cls: [] for cls in prototypes.keys()}
-    
-    global_bank = []
+    CRIT-1/HIGH-1 FIX: Usar base_t (Resize+CenterCrop, sin aleatoriedad) garantiza que
+    el bank sea idéntico para todos los tamaños de crop, haciendo los Recall comparables.
+    """
+    bank = []
     valid_paths = []
     for p in img_paths:
         try:
             img = Image.open(p).convert('RGB')
-            e_g = F.normalize(model(global_t(img).unsqueeze(0).to(device)), dim=-1)
-            global_bank.append(e_g)
+            e_g = F.normalize(model(base_t(img).unsqueeze(0).to(device)), dim=-1)
+            bank.append(e_g)
             valid_paths.append(p)
-        except: pass
+        except Exception:
+            pass
+    bank_tensor = torch.cat(bank, dim=0) if bank else None
+    return bank_tensor, valid_paths
+
+@torch.no_grad()
+def audit_images_by_class(valid_paths, model, device, global_size, local_size, local_scale, prototypes, bank_tensor, delta=0.10, num_locals=10):
+    """Audita métricas por clase usando un bank pre-computado y determinístico."""
+    _, local_t, _ = get_transforms(global_size, local_size, local_scale)
     
-    bank_tensor = torch.cat(global_bank, dim=0) if global_bank else None
+    class_metrics = {cls: [] for cls in prototypes.keys()}
+    
+    # CRIT-1 FIX: k para topk debe ser k+1 para excluir self-match, luego filtrar.
+    # Necesitamos 50 vecinos reales → pedimos 51 y descartamos el self-index.
+    k_request_50 = min(51, bank_tensor.shape[0]) if bank_tensor is not None else 0
+    k_request_10 = min(11, bank_tensor.shape[0]) if bank_tensor is not None else 0
     
     for i, img_path in enumerate(valid_paths):
         true_class = Path(img_path).parent.name
         if true_class not in class_metrics: continue
             
         img = Image.open(img_path).convert('RGB')
-        e_g1 = global_bank[i]
+        e_g1 = bank_tensor[i:i+1]  # [1, D]
         
+        # CRIT-1 FIX: Excluir self-index antes de computar vecinos.
+        # Poner similitud consigo mismo a -inf para que nunca entre en el topk.
         set_g1_10, set_g1_50 = set(), set()
         if bank_tensor is not None:
             sims_g1_bank = F.cosine_similarity(e_g1, bank_tensor)
-            _, topk_g1_50 = torch.topk(sims_g1_bank, min(50, bank_tensor.shape[0]))
+            sims_g1_bank[i] = -1.0  # Excluir self-match
+            _, topk_g1_50 = torch.topk(sims_g1_bank, min(50, bank_tensor.shape[0] - 1))
             set_g1_50 = set(topk_g1_50.tolist())
             set_g1_10 = set(topk_g1_50[:10].tolist())
             
@@ -139,10 +154,11 @@ def audit_images_by_class(img_paths, model, device, global_size, local_size, loc
             if proto_margin > delta:
                 sor_hits += 1
             
-            # Recalls
+            # Recalls — CRIT-1 FIX: excluir self-index del crop también
             if bank_tensor is not None:
                 sims_c_bank = F.cosine_similarity(e_c, bank_tensor)
-                _, topk_c_50 = torch.topk(sims_c_bank, min(50, bank_tensor.shape[0]))
+                sims_c_bank[i] = -1.0  # Excluir la imagen fuente del crop
+                _, topk_c_50 = torch.topk(sims_c_bank, min(50, bank_tensor.shape[0] - 1))
                 set_c_50 = set(topk_c_50.tolist())
                 set_c_10 = set(topk_c_50[:10].tolist())
                 recalls_10.append(len(set_g1_10.intersection(set_c_10)) / 10.0)
@@ -210,19 +226,22 @@ def main():
     print("\n[Fase 1] Extrayendo Prototipos de Clase (K-Means K=3)...")
     prototypes = compute_class_prototypes(args.dataset_path, model, device, base_t, K=3)
     
-    report = {"dataset": args.dataset_path, "classes": {cls: {} for cls in classes_found}}
+    report = {"dataset": str(args.dataset_path), "classes": {cls: {} for cls in classes_found}}
     
     for cls in classes_found:
         report["classes"][cls]["Crop_Ablation"] = {}
 
-    print("\n[Fase 2] Auditoría de Crops y Curvas SOR")
+    print("\n[Fase 2] Construyendo Bank Determinístico (una sola vez)...")
     sampled_imgs = random.sample(all_imgs, min(args.samples, len(all_imgs)))
+    bank_tensor, valid_paths = build_deterministic_bank(sampled_imgs, model, device, base_t)
+    print(f"Bank construido: {bank_tensor.shape[0]} embeddings válidos.")
 
+    print("\n[Fase 3] Auditoría de Crops y Curvas SOR")
     for ls in args.local_sizes:
         print(f"Evaluando local_crop_size = {ls}px...")
         scale = (0.10, 0.35)
         metrics_by_class = audit_images_by_class(
-            sampled_imgs, model, device, args.global_size, ls, scale, prototypes, delta=args.delta
+            valid_paths, model, device, args.global_size, ls, scale, prototypes, bank_tensor, delta=args.delta
         )
         
         for cls, metrics in metrics_by_class.items():

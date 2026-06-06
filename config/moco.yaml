@@ -72,13 +72,15 @@ paths:
   eval_train_root: "/kaggle/input/datasets/joaquinignaciopetcho/textura-base-correcta/train"
   eval_val_root: "/kaggle/input/datasets/joaquinignaciopetcho/textura-base-correcta/val"
   data_yaml: ""
-  # === Checkpoints: Nombres nuevos para evitar choques con archivos viejos ===
+  # === Checkpoints ===
+  # NOTA: train.py --imgsz sobrescribe estos paths dinámicamente con el patrón
+  # moco_fase_{imgsz}_*. Los valores aquí son los defaults para --imgsz 384.
   resume_checkpoint: ""  
-  checkpoint_path: "/kaggle/working/moco_fase1_checkpoint.pth"
-  best_checkpoint_path: "/kaggle/working/moco_fase1_best.pth"
-  encoder_export_path: "/kaggle/working/moco_encoder_fase1_ready.pth"
-  metrics_path: "/kaggle/working/ssl_fase1_metrics.json"
-  index_cache_path: "/kaggle/working/train_fase1_index.npy"
+  checkpoint_path: "/kaggle/working/moco_fase_384_checkpoint.pth"
+  best_checkpoint_path: "/kaggle/working/moco_fase_384_best.pth"
+  encoder_export_path: "/kaggle/working/moco_encoder_384_ready.pth"
+  metrics_path: "/kaggle/working/ssl_384_metrics.json"
+  index_cache_path: "/kaggle/working/train_384_index.npy"
 
 eval:
   subset_size: 1000

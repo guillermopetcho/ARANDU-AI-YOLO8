@@ -341,9 +341,9 @@ def main():
                 )
 
                 if action == Action.EARLY_STOP:
-                    stop_signal.fill_(1)
+                    stop_signal.fill_(1)  # Señal 1: Action.EARLY_STOP
                 elif action == Action.ROLLBACK:
-                    stop_signal.fill_(2)
+                    stop_signal.fill_(2)  # Señal 2: Action.ROLLBACK
 
             ckpt_dict = build_checkpoint_dict(
                 model_q, model_k, optimizer, scheduler, scaler, queue,

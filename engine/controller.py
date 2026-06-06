@@ -6,6 +6,9 @@ from enum import IntEnum
 
 
 class Action(IntEnum):
+    """Acciones del MetaController.
+    NOTA: En train.py, stop_signal=1 corresponde a EARLY_STOP y stop_signal=2 a ROLLBACK.
+    """
     CONTINUE = 0
     EARLY_STOP = 1
     ROLLBACK = 2
@@ -204,7 +207,18 @@ class TrainingController:
             else:
                 self.patience += 1
                 if self.patience >= self.config["training"]["early_stopping_patience"]:
-                    return Action.EARLY_STOP
+                    # HIGH-2 FIX: No disparar EARLY_STOP sin al menos una validación
+                    # geométrica. Si mu/eff_rank nunca aparecieron en metrics (ej. SVD
+                    # omitido por pocas muestras), patience crece sin que el GeoSat
+                    # confirme que el espacio latente está realmente estancado.
+                    if self.geosat_activations >= 1:
+                        return Action.EARLY_STOP
+                    else:
+                        self.logger.warning(
+                            f"⚠️ HIGH-2: Patience ({self.patience}) alcanzó el límite, "
+                            f"pero GeoSat nunca se activó (0 activaciones). "
+                            f"Suprimiendo EARLY_STOP hasta tener datos geométricos."
+                        )
 
         self.is_best_geom = False
         

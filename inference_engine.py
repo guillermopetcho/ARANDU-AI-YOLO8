@@ -5,7 +5,7 @@ import yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import datasets, transforms
+from torchvision import transforms
 from torch.utils.data import DataLoader
 from PIL import Image
 import numpy as np

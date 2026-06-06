@@ -8,7 +8,7 @@ P4 (stride 16), P5 (stride 32).
 Características clave:
   - Coordinate Attention en P2 y P3 para sensibilidad a micro-lesiones.
   - GroupNorm(32) en lugar de BatchNorm2d (estabilidad en transferencia de dominio).
-  - Context Gate inicializado a 0 → Sigmoid(0)=0.5 (mezcla neutra al inicio).
+  - Residual Gate (antes Context Gate) inicializado con parámetro beta=0 (Y = X + beta * T(X)).
   - 4-Phase Unfreeze Curriculum: A (solo adapters) → B (+stage3) → C (+stage2) → D (full).
   - Carga de pesos SSL desde checkpoint ModelBase (moco.py).
 

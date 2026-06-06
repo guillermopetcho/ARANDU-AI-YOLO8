@@ -1,7 +1,6 @@
 import json
 import os
 import logging
-import math
 
 class MetaController:
     """
@@ -130,6 +129,8 @@ class MetaController:
             elif tex < 70.0:
                 self.semantic_state["recommended_phase"] = "RECOVER TEXTURE"
                 self.curriculum_params["local_loss_weight"] = 0.3
+                # MED-4 FIX: Permitir recuperar crops locales si se pierde el dominio de textura
+                self.curriculum_params["num_local_crops"] = min(4, self.curriculum_params.get("num_local_crops", 0) + 2)
             else:
                 self.semantic_state["recommended_phase"] = "FOCUS STRUCTURE"
                 

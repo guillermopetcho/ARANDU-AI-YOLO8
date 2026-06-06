@@ -41,15 +41,21 @@ class MoCoTrainer:
         # actual. Necesario para calcular accum_count correctamente cuando hay batches NaN
         # saltados: `step` avanza aunque no se acumuló gradiente, causando denominador inflado.
         valid_in_window = 0
-        # T1 FIX: Inicializar aliases antes del loop para evitar UnboundLocalError
-        # si el primer batch produce NaN y el loop hace 'continue' sin asignarlos.
-        q = k = l_pos = l_neg = None
-        current_norm = 0.0  # B-NORM FIX: inicializar antes del loop para evitar UnboundLocalError en batch NaN
+        # B-NORM FIX: inicializar antes del loop para evitar UnboundLocalError en batch NaN
+        current_norm = 0.0
 
         pbar = tqdm(loader) if rank == 0 else loader
         epoch_start = time.time()
 
         for step, batch in enumerate(pbar):
+            # CRIT-2 FIX: Resetear aliases al inicio de CADA step para que batches NaN
+            # no contaminen el bloque de métricas con valores del step anterior.
+            # Antes, q/k conservaban el valor del último batch exitoso, y la guarda
+            # `if q is not None` era siempre True tras el primer batch, causando que
+            # loss.item() del batch NaN se sumara al acumulador de métricas.
+            q = k = l_pos = l_neg = None
+            this_step_valid = False
+
             # F6 FIX: local_crops es [B, N, C, H, W] (5D).
             # channels_last solo aplica a tensores 4D — se aplica por slice dentro del loop.
             v_q, v_k, local_crops = batch
@@ -64,7 +70,17 @@ class MoCoTrainer:
             curriculum_epoch = self.config['training'].get('curriculum_epoch', 25)
             if epoch < curriculum_epoch and local_crops is not None:
                 # Ignorar crops muy pequeños (64x64) antes de la época de estabilización
+                n_before = len(local_crops)
                 local_crops = [crop for crop in local_crops if crop.shape[-1] >= 96]
+                # HIGH-3 FIX: Loguear crops filtrados en el primer step para hacer visible
+                # una posible misconfiguracion donde TODOS los crops son eliminados.
+                if step == 0 and n_before != len(local_crops) and rank == 0:
+                    import logging
+                    logging.getLogger("AranduSSL").info(
+                        f"📐 Curriculum filter (epoch {epoch}<{curriculum_epoch}): "
+                        f"{n_before - len(local_crops)}/{n_before} crops eliminados (<96px). "
+                        f"Restantes: {len(local_crops)}."
+                    )
                 
             if len(local_crops) > 0:
                 local_crops = [crop.to(self.device, non_blocking=True) for crop in local_crops]
@@ -189,6 +205,7 @@ class MoCoTrainer:
 
                 # R-5 FIX: Incrementar aquí, justo después de confirmar que el batch es válido.
                 valid_in_window += 1
+                this_step_valid = True  # CRIT-2 FIX: marcar step como válido para el bloque de métricas
 
                 accum_count = self.config['training']['grad_accum_steps']
                 if is_last_batch and not is_accum_step:
@@ -249,8 +266,11 @@ class MoCoTrainer:
                     if k is not None:
                         self.queue.enqueue_dequeue(k, step=global_step)
 
-            # === Métricas === (solo si q y k fueron asignados en este step)
-            if q is not None:
+            # === Métricas === (solo si este step completó forward+backward exitosamente)
+            # CRIT-2 FIX: Usar this_step_valid en lugar de 'q is not None'.
+            # La guarda anterior era True siempre que hubiera habido al menos un batch
+            # exitoso PREVIO, permitiendo que batches NaN sumaran loss stale a las métricas.
+            if this_step_valid:
                 epoch_loss += loss.item()
                 global_loss_sum += loss_global.item()
                 # BUG-C5 FIX: La guarda anterior (loss_local.numel() > 0) era trivialmente True

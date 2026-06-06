@@ -14,7 +14,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets import ImageFolder
 from torchvision import transforms as T
 from PIL import Image
-import glob
 
 from models.moco import build_index, MoCoDataset, ModelBase, MoCoQueue
 
@@ -34,6 +33,7 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
         self.images_dir = os.path.join(root, "images")
         self.labels_dir = os.path.join(root, "labels")
         
+        import glob
         self.image_files = []
         for ext in ('*.jpg', '*.jpeg', '*.png', '*.webp', '*.bmp', '*.tiff', '*.tif', '*.JPG', '*.JPEG', '*.PNG', '*.WEBP', '*.BMP', '*.TIFF', '*.TIF'):
             self.image_files.extend(glob.glob(os.path.join(self.images_dir, ext)))
@@ -176,7 +176,7 @@ def resolve_kaggle_paths(paths_config, rank=0):
                            f"Path original: {dataset_root}")
         return paths_config
 
-    old_root = base_to_replace if 'base_to_replace' in locals() else dataset_root
+    old_root = base_to_replace
     new_root = found
     if rank == 0:
         logger.info(f"🔍 Auto-discovery: dataset encontrado en {new_root}")
