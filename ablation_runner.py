@@ -109,9 +109,7 @@ def audit_images_by_class(valid_paths, model, device, global_size, local_size, l
     
     # CRIT-1 FIX: k para topk debe ser k+1 para excluir self-match, luego filtrar.
     # Necesitamos 50 vecinos reales → pedimos 51 y descartamos el self-index.
-    k_request_50 = min(51, bank_tensor.shape[0]) if bank_tensor is not None else 0
-    k_request_10 = min(11, bank_tensor.shape[0]) if bank_tensor is not None else 0
-    
+    # Necesitamos 50 vecinos reales → pedimos 51 y descartamos el self-index.
     for i, img_path in enumerate(valid_paths):
         true_class = Path(img_path).parent.name
         if true_class not in class_metrics: continue
