@@ -1,10 +1,63 @@
 import os
 import argparse
 import glob
+import random
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 from torchvision import transforms as T
 from tqdm import tqdm
+
+class SoftReflection:
+    """
+    Agrega un reflejo especular suave y localizado simulando luz solar o humedad.
+    Genera varianza en la iluminación sin alterar el color biológico (HUE).
+    """
+    def __init__(self, p=0.3, intensity_range=(0.05, 0.15), area_range=(0.05, 0.20)):
+        self.p = p
+        self.intensity_range = intensity_range
+        self.area_range = area_range
+
+    def __call__(self, img):
+        if random.random() > self.p:
+            return img
+            
+        w, h = img.size
+        img_area = w * h
+        
+        # Tamaño aleatorio del reflejo (5% al 20% del área)
+        target_area = img_area * random.uniform(*self.area_range)
+        aspect_ratio = random.uniform(0.5, 2.0)
+        
+        ref_w = int((target_area * aspect_ratio) ** 0.5)
+        ref_h = int((target_area / aspect_ratio) ** 0.5)
+        
+        ref_w = max(10, min(ref_w, w))
+        ref_h = max(10, min(ref_h, h))
+        
+        # Posición aleatoria
+        cx = random.randint(0, w)
+        cy = random.randint(0, h)
+        
+        # Crear capa de reflejo (blanca con transparencia)
+        overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+        
+        # Intensidad (5% a 15%)
+        intensity = random.uniform(*self.intensity_range)
+        alpha = int(255 * intensity)
+        
+        x0, y0 = cx - ref_w//2, cy - ref_h//2
+        x1, y1 = cx + ref_w//2, cy + ref_h//2
+        
+        # Dibujar elipse base
+        draw.ellipse([x0, y0, x1, y1], fill=(255, 255, 255, alpha))
+        
+        # Difuminar fuertemente para crear un gradiente suave
+        blur_radius = max(ref_w, ref_h) // 3
+        overlay = overlay.filter(ImageFilter.GaussianBlur(blur_radius))
+        
+        # Mezclar con la imagen original
+        return Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
 
 def get_leaf_pipeline(size=640):
     """
@@ -18,8 +71,9 @@ def get_leaf_pipeline(size=640):
         T.RandomVerticalFlip(p=0.5),
         # Simulamos diferentes ángulos de la cámara con perspectiva leve
         T.RandomPerspective(distortion_scale=0.2, p=0.3),
-        # ColorJitter: Permitimos variación en luz y saturación, 
-        # pero el Matiz (HUE) DEBE SER CASI CERO para no cambiar enfermedades (ej. volver amarillo un tejido verde)
+        # Reflejos especulares suaves (sol, humedad, drone)
+        SoftReflection(p=0.3, intensity_range=(0.05, 0.15)),
+        # ColorJitter global
         T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.015),
         # Desenfoque ocasional simulando cámara fuera de foco
         T.RandomApply([T.GaussianBlur(kernel_size=5, sigma=(0.1, 2.0))], p=0.3),
@@ -36,6 +90,8 @@ def get_texture_pipeline(size=384):
         T.RandomResizedCrop(size, scale=(0.4, 0.9), ratio=(0.8, 1.2)),
         T.RandomHorizontalFlip(p=0.5),
         T.RandomVerticalFlip(p=0.5),
+        # Reflejos especulares más esporádicos en micro-texturas
+        SoftReflection(p=0.2, intensity_range=(0.05, 0.12)),
         # Acentuamos un poco más el contraste para resaltar bordes de las lesiones
         T.ColorJitter(brightness=0.2, contrast=0.4, saturation=0.2, hue=0.01),
         T.RandomApply([T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0))], p=0.2),

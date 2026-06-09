@@ -47,8 +47,8 @@ class MetaController:
         """Inicializa el perfil óptimo basado en la base empírica y el estado heredado."""
         profile = {
             384: {"global_crop_size": 384, "local_crop_size": 96, "batch_size": 16, "warmup_epochs": 2, "local_loss_weight": 0.2, "num_local_crops": 4},
-            512: {"global_crop_size": 512, "local_crop_size": 128, "batch_size": 8, "warmup_epochs": 3, "local_loss_weight": 0.25, "num_local_crops": 4},
-            640: {"global_crop_size": 640, "local_crop_size": 160, "batch_size": 4, "warmup_epochs": 4, "local_loss_weight": 0.15, "num_local_crops": 2}
+            512: {"global_crop_size": 512, "local_crop_size": 160, "batch_size": 8, "warmup_epochs": 3, "local_loss_weight": 0.25, "num_local_crops": 4},
+            640: {"global_crop_size": 640, "local_crop_size": 192, "batch_size": 4, "warmup_epochs": 4, "local_loss_weight": 0.15, "num_local_crops": 2}
         }[self.current_imgsz]
 
         prev = self._load_prev_knowledge()
