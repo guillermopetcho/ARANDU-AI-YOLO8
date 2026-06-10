@@ -31,7 +31,7 @@ def load_encoder(checkpoint_path, dim=512, device='cuda'):
 
 @torch.no_grad()
 def get_embedding(model, img_tensor):
-    feat = model.backbone(img_tensor)
+    feat = model.encoder(img_tensor)
     if isinstance(feat, list):
         feat = feat[-1]
     if feat.ndim == 4:

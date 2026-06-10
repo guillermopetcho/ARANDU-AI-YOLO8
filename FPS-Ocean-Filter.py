@@ -59,7 +59,7 @@ def extract_embeddings_in_batches(image_paths, encoder, device, batch_size=128, 
     
     for batch_tensors, batch_paths in tqdm(dataloader, desc=desc, leave=False):
         batch_tensors = batch_tensors.to(device)
-        feat = encoder.backbone(batch_tensors)
+        feat = encoder.encoder(batch_tensors)
         
         if isinstance(feat, list):
             feat = feat[-1]

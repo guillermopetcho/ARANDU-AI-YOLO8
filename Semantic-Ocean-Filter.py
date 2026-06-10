@@ -43,7 +43,7 @@ def get_embedding(model, img, device):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     tensor = transform(img).unsqueeze(0).to(device)
-    feat = model.backbone(tensor)
+    feat = model.encoder(tensor)
     
     if isinstance(feat, list):
         feat = feat[-1]
