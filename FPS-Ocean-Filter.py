@@ -132,11 +132,12 @@ def run_fps_filtering(input_dir, output_dir, real_dir, encoder, device, target_p
         print(f"\n[*] Procesando Pipeline FPS Masivo para '{cls_name}'")
         
         # 1. Extraer semántica de biológica real (Ancla)
-        real_cls_dir = os.path.join(real_dir, cls_name)
+        real_cls_name = cls_name.split('-OCEANS')[0]
+        real_cls_dir = os.path.join(real_dir, real_cls_name)
         real_images = [str(f) for f in Path(real_cls_dir).rglob("*") if f.suffix.lower() in exts]
         
         if not real_images:
-            print(f"    [!] Sin dataset real para {cls_name}. Saltando.")
+            print(f"    [!] Sin dataset real para {real_cls_name} (original: {cls_name}). Saltando.")
             continue
             
         # Limitamos a 800 reales para que la matriz sim_to_real quepa holgadamente en VRAM
