@@ -100,7 +100,7 @@ class SpatialFeatureAdapter(nn.Module):
     las primeras iteraciones del fine-tuning.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, use_coord_attn: bool = False):
+    def __init__(self, in_channels: int, out_channels: int, use_coord_attn: bool = False, dropout_p: float = 0.05):
         super().__init__()
 
         # 1. Compresión de canales
@@ -116,7 +116,7 @@ class SpatialFeatureAdapter(nn.Module):
                       bias=False, groups=out_channels),
             _gn(out_channels),
             nn.SiLU(inplace=True),
-            nn.Dropout(p=0.05)  # Regularización ligera — no destruye canales enteros
+            nn.Dropout(p=dropout_p)  # Regularización adaptativa
         )
 
         # 3. Atención espacial posicional (P2 y P3)
@@ -207,20 +207,21 @@ class AranduBackbone(nn.Module):
 
         # ----------------------------------------------------------------
         # Adaptadores espaciales — uno por nivel de feature
-        # P2 y P3: CoordAtt activado (alta resolución, micro-lesiones)
-        # P4 y P5: sin CoordAtt (objetos más grandes, contexto semántico)
+        # P2 y P3: CoordAtt activado (alta resolución, micro-lesiones).
+        #   Usamos mayor dropout (0.15) para forzar uso del shortcut (MoCo pre-trained).
+        # P4 y P5: sin CoordAtt (objetos más grandes), menor dropout (0.05).
         # ----------------------------------------------------------------
         self.adapter_p2 = SpatialFeatureAdapter(
-            self.STAGE_CHANNELS[0], yolo_channels[0], use_coord_attn=use_coord_attn
+            self.STAGE_CHANNELS[0], yolo_channels[0], use_coord_attn=use_coord_attn, dropout_p=0.15
         )
         self.adapter_p3 = SpatialFeatureAdapter(
-            self.STAGE_CHANNELS[1], yolo_channels[1], use_coord_attn=use_coord_attn
+            self.STAGE_CHANNELS[1], yolo_channels[1], use_coord_attn=use_coord_attn, dropout_p=0.15
         )
         self.adapter_p4 = SpatialFeatureAdapter(
-            self.STAGE_CHANNELS[2], yolo_channels[2], use_coord_attn=False
+            self.STAGE_CHANNELS[2], yolo_channels[2], use_coord_attn=False, dropout_p=0.05
         )
         self.adapter_p5 = SpatialFeatureAdapter(
-            self.STAGE_CHANNELS[3], yolo_channels[3], use_coord_attn=False
+            self.STAGE_CHANNELS[3], yolo_channels[3], use_coord_attn=False, dropout_p=0.05
         )
 
         self.set_training_phase(freeze_phase)
@@ -306,10 +307,13 @@ class AranduBackbone(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad = False
 
-        # Paso 2: Adaptadores siempre entrenables
+        # Paso 2: Adaptadores siempre entrenables (excepto beta en Fase A)
         for adapter in (self.adapter_p2, self.adapter_p3, self.adapter_p4, self.adapter_p5):
-            for p in adapter.parameters():
-                p.requires_grad = True
+            for name, p in adapter.named_parameters():
+                if phase == 1 and name == 'beta':
+                    p.requires_grad = False  # Prevenir que empiece a mezclar antes de alinear features
+                else:
+                    p.requires_grad = True
 
         # Paso 3: Descongelar stages según la fase
         if phase >= 2:
@@ -325,14 +329,18 @@ class AranduBackbone(nn.Module):
                 for p in self.backbone.stages[2].parameters(): p.requires_grad = True
 
         if phase >= 4:
-            for p in self.backbone.parameters():
-                p.requires_grad = True  # Todo
+            # En lugar de descongelar TODO, preservamos las etapas de alta frecuencia
+            # (Stage 0 y Stage 1) que contienen las features texturales MoCo de 89% ACC.
+            # Solo aseguramos que el stem, si existe, u otras capas externas estén libres.
+            if hasattr(self.backbone, 'stem'):
+                for p in self.backbone.stem.parameters(): p.requires_grad = True
+            # Stages 0 y 1 permanecen CONGELADOS intencionalmente para evitar Catastrophic Forgetting
 
         phase_desc = {
             1: "A — Solo Adaptadores (backbone 100% congelado)",
             2: "B — + Stage3/P5 liberado",
             3: "C — + Stage2/P4 liberado",
-            4: "D — Full Fine-Tuning",
+            4: "D — Full Fine-Tuning (Stages 2/3 liberados. Stages 0/1 CONGELADOS)",
         }
         self.logger.info(f"[AranduBackbone] Fase {phase_desc[phase]}")
 
