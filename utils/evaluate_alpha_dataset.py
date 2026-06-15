@@ -14,8 +14,8 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-# Importamos la clase extractora que ya definimos
-from utils.visualize_alpha import AlphaMapExtractor
+# Importamos la clase extractora actualizada (Residual Gate β)
+from utils.visualize_alpha import AdapterContributionExtractor
 
 
 def load_ground_truth(label_path, img_width, img_height):
@@ -37,7 +37,7 @@ def load_ground_truth(label_path, img_width, img_height):
 def evaluate_alpha_on_dataset(model_path, data_yaml):
     print("[*] Inicializando Evaluación Cuantitativa de Escala y Distribución...")
     model = YOLO(model_path)
-    extractor = AlphaMapExtractor(model)
+    extractor = AdapterContributionExtractor(model)
     
     with open(data_yaml, 'r') as f:
         data_cfg = yaml.safe_load(f)
@@ -92,9 +92,9 @@ def evaluate_alpha_on_dataset(model_path, data_yaml):
                 
         # Extraer alphas y guardar muestras
         for scale in stats.keys():
-            alpha_tensor = extractor.alphas.get(scale, None)
-            if alpha_tensor is not None:
-                a_map = cv2.resize(alpha_tensor[0, 0], (w, h))
+            contrib_tensor = extractor.contributions.get(scale, None)
+            if contrib_tensor is not None:
+                a_map = cv2.resize(contrib_tensor[0, 0], (w, h))
                 
                 if (~mask_gt).any(): stats[scale]['bg'].extend(a_map[~mask_gt].tolist()[::sub_step])
                 if mask_gt.any(): stats[scale]['gt'].extend(a_map[mask_gt].tolist()[::sub_step])
@@ -159,8 +159,6 @@ def evaluate_alpha_on_dataset(model_path, data_yaml):
 
 if __name__ == "__main__":
     import argparse
-    import os
-    import sys
 
     # Asegurar que la raiz del proyecto esté en el path,
     # independientemente de desde qué directorio se ejecute el script.

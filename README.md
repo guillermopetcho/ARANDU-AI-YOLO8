@@ -297,17 +297,6 @@ sequenceDiagram
 5. **Portabilidad**: `weights_only=True` en todos los `torch.load()`, soporte CPU/GPU/DDP/compile.
 6. **Métricas ricas**: Alignment, Uniformity, Cosine Sims, Effective Rank, GeoSat Score — observabilidad completa del espacio latente.
 
-### ⚠️ Riesgos y Deuda Técnica
-
-| Severidad | Hallazgo | Ubicación |
-|-----------|----------|-----------|
-| 🟡 Media | `controller.py` tiene ~700 líneas con alta complejidad ciclomática. El método `step_epoch()` tiene ~400 líneas con 8+ niveles de anidamiento. | [controller.py:161-547](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/engine/controller.py#L161-L547) |
-| 🟡 Media | `unsupervised_segmenter.py` usa `AranduBackbone` (el wrapper de YOLO con adapters) en lugar de `ModelBase` directo. Esto funciona pero carga pesos de los adapters innecesariamente y depende de `timm` con `features_only=True`. | [unsupervised_segmenter.py:69](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/unsupervised_segmenter.py#L69) |
-| 🟡 Media | `train_yolo.py` requiere `ultralytics` instalado (módulo externo), pero el subdirectorio local `ultralytics/` no está instalado automáticamente. | [train_yolo.py:26](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/train_yolo.py#L26) |
-| 🟢 Baja | `flake8_report.txt` tiene 311KB de warnings — hay deuda de estilo pendiente. | `flake8_report.txt` |
-| 🟢 Baja | `ablation_runner.py` se llama "ablation" pero realmente hace auditoría de prototipos, no ablación YOLO. | [ablation_runner.py](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/ablation_runner.py) |
-| 🟢 Baja | El `Path` import en `unsupervised_segmenter.py` no se usa. | [unsupervised_segmenter.py:8](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/unsupervised_segmenter.py#L8) |
-
 ---
 
 ## 6. Mapa de Dependencias entre Módulos

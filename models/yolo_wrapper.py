@@ -91,13 +91,15 @@ class SpatialFeatureAdapter(nn.Module):
     Pipeline:
         x (in_channels)
           → Conv1×1 + GroupNorm + SiLU          [compresión a out_channels]
-          → DW-Conv3×3 + GroupNorm + SiLU + Dropout(0.05)  [localidad]
+          → DW-Conv3×3 + GroupNorm + SiLU + Dropout  [localidad]
           → [CoordinateAttention]               [opcional, P2 y P3]
-          → Context Gate: α*shortcut + (1-α)*local_feat   [combinación convexa]
+          → Residual Gate: shortcut + β · local_feat   [mezcla aditiva]
 
-    Context Gate inicializado a 0 → Sigmoid(0)=0.5 al inicio.
-    Garantiza que el adaptador no destruya las representaciones SSL durante
-    las primeras iteraciones del fine-tuning.
+    Residual Gate (β escalar, init=0):
+      Al inicio (β=0) el adaptador es un passthrough puro de las features SSL.
+      Durante el training, β aprende cuánta información del adaptador inyectar.
+      A diferencia de una combinación convexa (α), β no está acotado — permite
+      al modelo escalar la contribución del adaptador libremente.
     """
 
     def __init__(self, in_channels: int, out_channels: int, use_coord_attn: bool = False, dropout_p: float = 0.05):

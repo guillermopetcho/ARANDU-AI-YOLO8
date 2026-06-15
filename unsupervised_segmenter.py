@@ -1,70 +1,177 @@
+"""
+unsupervised_segmenter.py — Segmentación No Supervisada por Recompensa (AranduSSL)
+
+Segmenta imágenes de soja usando exclusivamente las representaciones texturales
+aprendidas por el encoder MoCo, sin etiquetas manuales.
+
+Función de Recompensa (3 términos):
+  1. Compactness:  Maximizar similitud intra-cluster (texturas similares juntas).
+  2. Separation:   Minimizar similitud inter-cluster (clusters distintos entre sí).
+  3. Entropy:      Regularizar el tamaño de los clusters para evitar colapso a uno solo.
+
+Uso:
+    python unsupervised_segmenter.py \\
+        --image /ruta/a/imagen.jpg \\
+        --encoder /ruta/a/moco_encoder_ready.pth \\
+        --clusters 3 --iters 150
+"""
+
 import argparse
+import logging
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
 
-# Importamos tu backbone MoCo pre-entrenado
 from models.yolo_wrapper import AranduBackbone
+
+logger = logging.getLogger("AranduSegmenter")
+
+
+# ---------------------------------------------------------------------------
+# Segmentador Autodidacta
+# ---------------------------------------------------------------------------
 
 class AutodidactSegmenter(nn.Module):
     """
-    Una red pequeña que aprenderá a segmentar basándose en una función de recompensa.
-    No usa etiquetas reales, solo intenta maximizar la coherencia de las texturas.
+    Red ligera que aprende a segmentar basándose en una función de recompensa.
+    No usa etiquetas reales, solo maximiza la coherencia textural en el espacio
+    latente del MoCo.
+
+    Arquitectura: Conv3×3 + BN + ReLU → Conv3×3 + BN + ReLU → Conv1×1
+    El doble bloque Conv3×3 le da campo receptivo suficiente para capturar
+    contexto local antes de la clasificación por píxel.
     """
-    def __init__(self, in_channels, num_clusters=3):
+    def __init__(self, in_channels: int, num_clusters: int = 3):
         super().__init__()
+        mid = max(64, in_channels // 4)
         self.segmenter = nn.Sequential(
-            nn.Conv2d(in_channels, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(in_channels, mid, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid),
             nn.ReLU(inplace=True),
-            nn.Conv2d(128, num_clusters, kernel_size=1)
+            nn.Conv2d(mid, mid, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(mid),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(mid, num_clusters, kernel_size=1),
         )
 
-    def forward(self, x):
-        # Retorna probabilidades para cada cluster (pixeles)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Retorna soft-assignments [B, K, H, W] con softmax por píxel."""
         return F.softmax(self.segmenter(x), dim=1)
 
-def compute_reward_loss(masks, features):
+
+# ---------------------------------------------------------------------------
+# Función de Recompensa (Loss No Supervisada)
+# ---------------------------------------------------------------------------
+
+def compute_reward_loss(
+    masks: torch.Tensor,
+    features: torch.Tensor,
+    separation_weight: float = 0.5,
+    entropy_weight: float = 0.3,
+) -> torch.Tensor:
     """
-    Función de recompensa (Loss No Supervisada).
-    Premia al modelo si agrupa píxeles que tienen características (texturas) similares
-    en el espacio latente del MoCo, y lo penaliza si mezcla texturas diferentes.
+    Loss de recompensa de 3 términos para segmentación no supervisada.
+
+    Args:
+        masks:    [B, K, H, W] — soft-assignments del segmentador.
+        features: [B, C, H, W] — feature maps del encoder MoCo (congelado).
+        separation_weight: Peso del término de separación inter-cluster.
+        entropy_weight:    Peso del término de entropía para balanceo de clusters.
+
+    Returns:
+        loss escalar (menor = mejor segmentación).
+
+    Términos:
+        1. Compactness (↑): Similitud media de cada píxel con el centroide de su cluster.
+           Premia agrupar texturas similares.
+
+        2. Separation (↓): Similitud media entre centroides de clusters distintos.
+           Penaliza clusters redundantes (que miren texturas iguales).
+
+        3. Entropy (↑): Entropía de la distribución de tamaños de cluster.
+           Previene que un solo cluster absorba todos los píxeles.
     """
     B, K, H, W = masks.shape
-    C = features.shape[1]
-    
+    N = H * W
+
     # Aplanar dimensiones espaciales
-    masks = masks.view(B, K, -1)        # [B, K, N] donde N = H*W
-    features = features.view(B, C, -1)  # [B, C, N]
-    
-    # Normalizar features para comparar con Similitud Coseno
-    features = F.normalize(features, p=2, dim=1)
-    
-    # 1. Calcular el centroide (textura promedio) de cada cluster
-    mask_sum = masks.sum(dim=-1, keepdim=True) + 1e-6
-    centroids = torch.bmm(masks, features.transpose(1, 2)) / mask_sum  # [B, K, C]
+    masks_flat = masks.view(B, K, N)             # [B, K, N]
+    features_flat = features.view(B, -1, N)      # [B, C, N]
+    features_flat = F.normalize(features_flat, p=2, dim=1)
+
+    # --- 1. COMPACTNESS: similitud intra-cluster ---
+    mask_sum = masks_flat.sum(dim=-1, keepdim=True) + 1e-6        # [B, K, 1]
+    centroids = torch.bmm(masks_flat, features_flat.transpose(1, 2))  # [B, K, C]
+    centroids = centroids / mask_sum
     centroids = F.normalize(centroids, p=2, dim=2)
-    
-    # 2. Calcular la similitud de cada pixel con los centroides
-    sim_to_centroids = torch.bmm(centroids, features)  # [B, K, N]
-    
-    # 3. La recompensa es qué tan similares son los píxeles al centroide del cluster al que fueron asignados
-    compactness_reward = (sim_to_centroids * masks).sum(dim=-1) / mask_sum.squeeze(-1) # [B, K]
-    
-    # Convertimos la recompensa en una Loss (minimizamos el negativo de la recompensa)
-    loss = -compactness_reward.mean()
-    
+
+    sim_to_centroids = torch.bmm(centroids, features_flat)        # [B, K, N]
+    compactness = (sim_to_centroids * masks_flat).sum(dim=-1)     # [B, K]
+    compactness = compactness / mask_sum.squeeze(-1)
+    loss_compactness = -compactness.mean()
+
+    # --- 2. SEPARATION: disimilitud inter-cluster ---
+    # Similitud coseno entre todos los pares de centroides
+    # [B, K, C] × [B, C, K] → [B, K, K]
+    centroid_sims = torch.bmm(centroids, centroids.transpose(1, 2))  # [B, K, K]
+    # Excluir la diagonal (similitud consigo mismo = 1.0)
+    if K > 1:
+        eye = torch.eye(K, device=masks.device).unsqueeze(0)        # [1, K, K]
+        off_diag_mask = 1.0 - eye
+        # Media de similitudes entre pares distintos (queremos minimizarla)
+        n_pairs = K * (K - 1)
+        loss_separation = (centroid_sims * off_diag_mask).sum() / (B * n_pairs)
+    else:
+        loss_separation = torch.zeros(1, device=masks.device)
+
+    # --- 3. ENTROPY: regularización de balance de clusters ---
+    # Distribución de probabilidad de pertenencia promedio por cluster
+    cluster_probs = masks_flat.mean(dim=-1)                # [B, K] — proporción de píxeles por cluster
+    cluster_probs = cluster_probs.mean(dim=0)              # [K] — promedio sobre el batch
+    cluster_probs = cluster_probs.clamp(min=1e-6)
+    cluster_probs = cluster_probs / cluster_probs.sum()    # Normalizar
+    # Entropía máxima = log(K) → clusters perfectamente balanceados
+    entropy = -(cluster_probs * torch.log(cluster_probs)).sum()
+    max_entropy = torch.log(torch.tensor(float(K), device=masks.device))
+    # Penalizar baja entropía (clusters desbalanceados)
+    loss_entropy = -(entropy / (max_entropy + 1e-6))
+
+    # --- LOSS TOTAL ---
+    loss = loss_compactness + separation_weight * loss_separation + entropy_weight * loss_entropy
+
     return loss
 
-def train_autodidact_segmentation(image_path, encoder_path, iterations=100, num_clusters=3):
+
+# ---------------------------------------------------------------------------
+# Pipeline principal
+# ---------------------------------------------------------------------------
+
+def train_autodidact_segmentation(
+    image_path: str,
+    encoder_path: str,
+    num_clusters: int = 3,
+    iterations: int = 100,
+    output_path: str = "segmentacion_autodidacta.png",
+):
+    """
+    Ejecuta la segmentación no supervisada por recompensa sobre una imagen.
+
+    Args:
+        image_path:   Ruta a la imagen de soja.
+        encoder_path: Ruta al checkpoint SSL (moco_encoder_ready.pth o checkpoint de training).
+        num_clusters: Número de clusters (ej. 3 = Fondo, Hoja sana, Enfermedad).
+        iterations:   Iteraciones de optimización por recompensa.
+        output_path:  Ruta de salida del PNG con la visualización.
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[*] Usando dispositivo: {device}")
 
-    # 1. Cargar el Encoder MoCo (Congelado, ya conoce las texturas)
+    # 1. Cargar el Encoder MoCo (Congelado — ya conoce las texturas)
     print("[*] Cargando AranduBackbone...")
     backbone = AranduBackbone(moco_checkpoint_path=encoder_path).to(device)
     backbone.eval()
@@ -75,11 +182,10 @@ def train_autodidact_segmentation(image_path, encoder_path, iterations=100, num_
     img_bgr = cv2.imread(image_path)
     if img_bgr is None:
         raise FileNotFoundError(f"No se pudo cargar la imagen: {image_path}")
-    
-    # Redimensionar para la red (ej. 512x512)
+
     img_resized = cv2.resize(img_bgr, (512, 512))
     img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-    
+
     # Normalización estándar ImageNet (como usa ConvNeXt)
     tensor_img = torch.from_numpy(img_rgb).float() / 255.0
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
@@ -87,75 +193,110 @@ def train_autodidact_segmentation(image_path, encoder_path, iterations=100, num_
     tensor_img = tensor_img.permute(2, 0, 1).unsqueeze(0).to(device)
     tensor_img = (tensor_img - mean) / std
 
-    # Extraer features de las texturas (usamos P3 o P4 del backbone)
+    # 3. Extraer features multi-escala del backbone
     with torch.no_grad():
-        features_list = backbone(tensor_img)
-        # Usamos features de P3 (resolución decente, buena textura)
-        texture_features = features_list[1] # [B, C, H/8, W/8]
-        
-    # 3. Inicializar el Segmentador Autodidacta
+        features_list = backbone(tensor_img)  # [P2, P3, P4, P5]
+        # Usamos P3 (buena resolución + semántica textural rica)
+        texture_features = features_list[1]   # [B, 256, H/8, W/8]
+
+    # 4. Inicializar el Segmentador Autodidacta
     in_channels = texture_features.shape[1]
     segmenter = AutodidactSegmenter(in_channels, num_clusters).to(device)
     optimizer = torch.optim.Adam(segmenter.parameters(), lr=0.01)
+    # Cosine annealing para convergencia más suave en las últimas iteraciones
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iterations)
 
-    print(f"[*] Iniciando aprendizaje por recompensa (Maximizando similitud de texturas)...")
+    print(f"[*] Iniciando aprendizaje por recompensa ({iterations} iteraciones, {num_clusters} clusters)...")
     for i in range(iterations):
         optimizer.zero_grad()
-        
-        # El segmentador predice una máscara basada en las texturas
+
         masks = segmenter(texture_features)
-        
-        # Calculamos qué tan buena fue la segmentación (Reward Loss)
         loss = compute_reward_loss(masks, texture_features)
-        
+
         loss.backward()
         optimizer.step()
-        
-        if (i+1) % 20 == 0:
-            print(f"  Iteración {i+1}/{iterations} | Recompensa (Neg Loss): {-loss.item():.4f}")
+        scheduler.step()
 
-    # 4. Visualización
+        if (i + 1) % 20 == 0:
+            # Mostrar distribución de clusters para diagnosticar colapso
+            with torch.no_grad():
+                cluster_sizes = masks.mean(dim=(0, 2, 3))  # [K]
+                sizes_str = " | ".join([f"C{j}:{cluster_sizes[j]:.2%}" for j in range(num_clusters)])
+            print(f"  Iter {i+1:>4}/{iterations} | Loss: {loss.item():.4f} | {sizes_str}")
+
+    # 5. Generar mapa de segmentación final
     segmenter.eval()
     with torch.no_grad():
-        final_masks = segmenter(texture_features) # [1, K, H', W']
-        
-    # Hacer upsample de la máscara al tamaño original
+        final_masks = segmenter(texture_features)  # [1, K, H', W']
+
+    # Upsample al tamaño original
     final_masks_up = F.interpolate(final_masks, size=(512, 512), mode='bilinear', align_corners=False)
     segmentation_map = torch.argmax(final_masks_up[0], dim=0).cpu().numpy()
 
-    # Visualizar
-    plt.figure(figsize=(15, 5))
-    
-    plt.subplot(1, 3, 1)
-    plt.title("Imagen Original")
-    plt.imshow(img_rgb)
-    plt.axis('off')
-    
-    plt.subplot(1, 3, 2)
-    plt.title("Mapa de Segmentación Autodidacta")
-    plt.imshow(segmentation_map, cmap='viridis')
-    plt.axis('off')
+    # 6. Visualización
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
-    plt.subplot(1, 3, 3)
-    plt.title("Superposición")
-    overlay = img_rgb.copy()
-    # Crear mascara de colores
-    colored_mask = plt.get_cmap('viridis')(segmentation_map / (num_clusters - 1))[:, :, :3] * 255
-    overlay = cv2.addWeighted(overlay, 0.6, colored_mask.astype(np.uint8), 0.4, 0)
-    plt.imshow(overlay)
-    plt.axis('off')
-    
+    # Panel 1: Imagen Original
+    axes[0].imshow(img_rgb)
+    axes[0].set_title("Imagen Original", fontsize=14, fontweight='bold')
+    axes[0].axis('off')
+
+    # Panel 2: Mapa de Segmentación
+    cmap = plt.get_cmap('Set1', num_clusters)
+    im = axes[1].imshow(segmentation_map, cmap=cmap, vmin=0, vmax=num_clusters - 1)
+    axes[1].set_title("Segmentación Autodidacta", fontsize=14, fontweight='bold')
+    axes[1].axis('off')
+    # Leyenda de clusters
+    cbar = fig.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04, ticks=range(num_clusters))
+    cbar.set_ticklabels([f"Cluster {i}" for i in range(num_clusters)])
+
+    # Panel 3: Superposición
+    # Normalizar segmentation_map a [0, 1] para el colormap (safe para K=1)
+    seg_normalized = segmentation_map.astype(np.float32)
+    if num_clusters > 1:
+        seg_normalized = seg_normalized / (num_clusters - 1)
+    colored_mask = (cmap(seg_normalized)[:, :, :3] * 255).astype(np.uint8)
+    overlay = cv2.addWeighted(img_rgb, 0.6, colored_mask, 0.4, 0)
+    axes[2].imshow(overlay)
+    axes[2].set_title("Superposición", fontsize=14, fontweight='bold')
+    axes[2].axis('off')
+
+    plt.suptitle(f"Segmentación No Supervisada (K={num_clusters}) — AranduSSL",
+                 fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
-    plt.savefig("segmentacion_autodidacta.png", dpi=300)
-    print("\n[+] Resultado guardado en 'segmentacion_autodidacta.png'")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"\n[+] Resultado guardado en '{output_path}'")
     plt.show()
 
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--image", required=True, help="Ruta a la imagen de soja")
-    parser.add_argument("--encoder", required=True, help="Ruta al moco_encoder_ready.pth")
-    parser.add_argument("--clusters", type=int, default=3, help="Fondo, Hoja sana, Enfermedad (defecto 3)")
-    parser.add_argument("--iters", type=int, default=100, help="Iteraciones de aprendizaje por recompensa")
+    parser = argparse.ArgumentParser(
+        description="Segmentación no supervisada de enfermedades en soja usando features MoCo."
+    )
+    parser.add_argument("--image", required=True, help="Ruta a la imagen de soja.")
+    parser.add_argument("--encoder", required=True,
+                        help="Ruta al checkpoint SSL (moco_encoder_ready.pth o checkpoint de training).")
+    parser.add_argument("--clusters", type=int, default=3,
+                        help="Número de clusters: Fondo, Hoja sana, Enfermedad (default: 3).")
+    parser.add_argument("--iters", type=int, default=150,
+                        help="Iteraciones de aprendizaje por recompensa (default: 150).")
+    parser.add_argument("--output", type=str, default="segmentacion_autodidacta.png",
+                        help="Ruta del PNG de salida (default: segmentacion_autodidacta.png).")
     args = parser.parse_args()
-    
-    train_autodidact_segmentation(args.image, args.encoder, args.iters, args.clusters)
+
+    if not os.path.isfile(args.image):
+        raise FileNotFoundError(f"Imagen no encontrada: {args.image}")
+    if not os.path.isfile(args.encoder):
+        raise FileNotFoundError(f"Encoder no encontrado: {args.encoder}")
+
+    train_autodidact_segmentation(
+        image_path=args.image,
+        encoder_path=args.encoder,
+        num_clusters=args.clusters,
+        iterations=args.iters,
+        output_path=args.output,
+    )
