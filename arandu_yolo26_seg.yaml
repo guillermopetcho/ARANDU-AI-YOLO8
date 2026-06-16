@@ -1,0 +1,49 @@
+# =========================================================
+# ARANDU + YOLO SEGMENTATION (Backbone SSL ConvNeXt V2 Tiny)
+# =========================================================
+#
+# ⚠️  AJUSTAR nc AL NÚMERO REAL DE CLASES DEL DATASET ANTES DE ENTRENAR.
+nc: 5  # Dataset soja: 5 clases de enfermedades
+
+# =========================================================
+# BACKBONE
+# =========================================================
+backbone:
+  - [-1, 1, AranduYOLOWrapper, []]
+
+# =========================================================
+# NECK (PAN-FPN — P2 a P5)
+# =========================================================
+neck:
+  # --- FPN Top-Down ---
+  - [4, 1, nn.Upsample, [None, 2, "nearest"]]    # 5:  Upsample P5
+  - [[5, 3], 1, Concat, [1]]                      # 6:  Concat(UP_P5, P4)
+  - [6, 3, C2f, [512]]                            # 7:  P4_fpn
+
+  - [7, 1, nn.Upsample, [None, 2, "nearest"]]    # 8:  Upsample P4_fpn
+  - [[8, 2], 1, Concat, [1]]                      # 9:  Concat(UP_P4, P3)
+  - [9, 3, C2f, [256]]                            # 10: P3_fpn
+
+  - [10, 1, nn.Upsample, [None, 2, "nearest"]]   # 11: Upsample P3_fpn
+  - [[11, 1], 1, Concat, [1]]                     # 12: Concat(UP_P3, P2)
+  - [12, 3, C2f, [128]]                           # 13: P2_final (micro-lesiones)
+
+  # --- PAN Bottom-Up ---
+  - [13, 1, Conv, [128, 3, 2]]                   # 14: Downsample P2_final
+  - [[14, 10], 1, Concat, [1]]                    # 15: Concat(↓P2, P3_fpn)
+  - [15, 3, C2f, [256]]                           # 16: P3_final (small)
+
+  - [16, 1, Conv, [256, 3, 2]]                   # 17: Downsample P3_final
+  - [[17, 7], 1, Concat, [1]]                     # 18: Concat(↓P3, P4_fpn)
+  - [18, 3, C2f, [512]]                           # 19: P4_final (medium)
+
+  - [19, 1, Conv, [512, 3, 2]]                   # 20: Downsample P4_final
+  - [[20, 4], 1, Concat, [1]]                     # 21: Concat(↓P4, P5)
+  - [21, 3, C2f, [1024]]                          # 22: P5_final (large)
+
+# =========================================================
+# HEAD (Segment — 4 escalas P2/P3/P4/P5)
+# =========================================================
+head:
+  # Segment head inputs, nm=32 (mask coefficients), 256 (hidden features)
+  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 256]]
