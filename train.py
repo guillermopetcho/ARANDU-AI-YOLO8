@@ -442,7 +442,14 @@ def main():
                     'lr_step_factor': controller.lr_step_factor,
                     'lr_scale': controller.lr_scale
                 }
-            dist.barrier(device_ids=[local_rank])
+            # CRIT-1 FIX: dist.barrier(device_ids=...) solo es válido para el backend 'nccl'
+            # con CUDA. En CPU (backend 'gloo') o entornos de test, lanza RuntimeError.
+            # Mismo patrón aplicado en moco.py:238-242 (BUG-C3 FIX).
+            _backend = dist.get_backend() if dist.is_initialized() else ""
+            if torch.cuda.is_available() and _backend == "nccl":
+                dist.barrier(device_ids=[local_rank])
+            else:
+                dist.barrier()
             dist.broadcast_object_list(sync_data, src=0)
 
             if rank != 0:
@@ -514,19 +521,32 @@ def main():
             if res.unexpected_keys: logger.warning(f" Linear Probe model unexpected keys: {res.unexpected_keys}")
 
             num_classes = len(eval_ds.classes)
-            head, acc, f1 = run_linear_probe(eval_model_base, eval_ds, val_ds, num_classes, CONFIG, device)
+            # CRIT-2 FIX: Guard contra datasets vacíos (sin subcarpetas de clase en
+            # ImageFolder, o sin labels en YOLO format). Sin este check, num_classes=0
+            # causa un crash silencioso en CrossEntropyLoss dentro de run_linear_probe.
+            if num_classes == 0:
+                logger.error(
+                    "❌ eval_ds.classes está vacío (0 clases detectadas). "
+                    "Verifica que el dataset tenga subcarpetas de clase (ImageFolder) "
+                    "o archivos .txt válidos en labels/ (YOLO). Saltando Linear Probe."
+                )
+            else:
+                head, acc, f1 = run_linear_probe(eval_model_base, eval_ds, val_ds, num_classes, CONFIG, device)
 
-            torch.save(head, CONFIG["paths"]["encoder_export_path"].replace(".pth", "_head.pth"))
+                torch.save(head, CONFIG["paths"]["encoder_export_path"].replace(".pth", "_head.pth"))
+                with open(CONFIG["paths"]["metrics_path"], "w") as f:
+                    json.dump({"acc": acc, "f1": f1}, f, indent=4)
+
+                # Guardar nombres de clase junto al encoder para que AranduInferenceEngine
+                # pueda resolver las clases sin necesidad de acceso al dataset en producción.
+                class_names_path = CONFIG["paths"]["encoder_export_path"].replace(".pth", "_class_names.json")
+                with open(class_names_path, "w") as f:
+                    json.dump(eval_ds.classes, f, indent=2)
+                logger.info(f" Clases guardadas: {eval_ds.classes} → {class_names_path}")
+
+            # El encoder SSL se exporta SIEMPRE — es válido independientemente del
+            # Linear Probe. Solo head/metrics/class_names son condicionales.
             torch.save(clean_model_q, CONFIG["paths"]["encoder_export_path"])
-            with open(CONFIG["paths"]["metrics_path"], "w") as f:
-                json.dump({"acc": acc, "f1": f1}, f, indent=4)
-
-            # Guardar nombres de clase junto al encoder para que AranduInferenceEngine
-            # pueda resolver las clases sin necesidad de acceso al dataset en producción.
-            class_names_path = CONFIG["paths"]["encoder_export_path"].replace(".pth", "_class_names.json")
-            with open(class_names_path, "w") as f:
-                json.dump(eval_ds.classes, f, indent=2)
-            logger.info(f" Clases guardadas: {eval_ds.classes} → {class_names_path}")
             logger.info(" Listo.")
 
 

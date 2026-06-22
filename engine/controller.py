@@ -237,10 +237,11 @@ class TrainingController:
                 avg_pos  = sum(x['pos_sim']  for x in self.eval_buffer) / 3.0
                 avg_neg  = sum(x['neg_sim']  for x in self.eval_buffer) / 3.0
                 avg_rank = sum(x['eff_rank'] for x in self.eval_buffer) / 3.0
-                # Error 1 fix: sum() Python inicia con 0 (int), lo que falla en multi-GPU
-                # cuando el primer tensor no está en el mismo device que 0.
-                # torch.stack().mean() es el idiom correcto para promediar tensores.
-                avg_mu = torch.stack([x['mu'] for x in self.eval_buffer]).mean(dim=0)
+                # MED-4 FIX: Forzar .cpu() antes de torch.stack para evitar device mismatch.
+                # Tras un resume, eval_buffer puede contener tensores en CPU (deserializados)
+                # mientras el training produce tensores en GPU. El drift (L252) es un escalar,
+                # no necesita GPU.
+                avg_mu = torch.stack([x['mu'].cpu() if isinstance(x['mu'], torch.Tensor) else torch.tensor(x['mu']) for x in self.eval_buffer]).mean(dim=0)
 
                 # Error 3 fix: incrementar aquí, FUERA del bloque `if self.prev_mu is not None`,
                 # para contar correctamente la primera activación (cuando prev_mu aún es None).
@@ -643,9 +644,10 @@ class TrainingController:
         if raw_mu is None:
             self.prev_mu = None
         elif isinstance(raw_mu, dict) and raw_mu.get('__tensor__'):
+            # MED-4 FIX: Forzar CPU para consistencia con el torch.stack de L243.
             self.prev_mu = torch.tensor(raw_mu['data'])
         elif isinstance(raw_mu, torch.Tensor):
-            self.prev_mu = raw_mu  # Checkpoint legado con tensor directo
+            self.prev_mu = raw_mu.cpu()  # MED-4 FIX: Forzar CPU
         else:
             self.prev_mu = raw_mu  # Lista plana u otro tipo legado
 

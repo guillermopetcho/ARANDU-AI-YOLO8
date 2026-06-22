@@ -119,21 +119,27 @@ def handle_rollback(
         is_compiled=is_compiled, is_distributed=is_distributed,
     )
 
-    for param_group in optimizer.param_groups:
-        # BUG-ROLLBACK-LR FIX: Guardar el LR original ANTES de modificar initial_lr.
-        # El bug anterior multiplicaba initial_lr *= 0.5 y luego pasaba ese valor
-        # reducido a build_scheduler como base, compoundando el recorte con el
-        # decaimiento cosenoidal (LR efectivo = 0.5 * cosine, no cosine).
-        # Ahora el scheduler recibe el LR original y solo el lr activo se reduce.
-        new_lr = param_group['initial_lr'] * 0.5
-        param_group['lr'] = new_lr
-        # initial_lr NO se modifica: el scheduler lo usará como referencia base completa.
-
+    # HIGH-2 FIX: El bug anterior aplicaba lr = initial_lr * 0.5 ANTES del fast-forward,
+    # pero build_scheduler crea un LambdaLR que calcula lr = initial_lr * lambda(step),
+    # sobrescribiendo la penalización en el primer scheduler.step().
+    #
+    # Solución: reconstruir el scheduler normalmente, hacer fast-forward, y DESPUÉS
+    # reducir initial_lr al 50%. Esto garantiza que:
+    #   1. El fast-forward posiciona el scheduler en el step correcto del checkpoint.
+    #   2. La penalización 0.5x se aplica SOBRE el LR que el scheduler calculó.
+    #   3. Futuros scheduler.step() usan el initial_lr reducido como base,
+    #      preservando la penalización en el decaimiento cosenoidal.
+    #   4. El floor de 1e-7 previene que rollbacks consecutivos colapsen el LR.
     scheduler = build_scheduler(optimizer, warmup_steps, total_steps, final_lr_ratio=final_lr_ratio)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for _ in range(ckpt_step):  # Fast-forward al paso del checkpoint
             scheduler.step()
+
+    # Aplicar penalización 0.5x DESPUÉS del fast-forward para que persista
+    for param_group in optimizer.param_groups:
+        param_group['initial_lr'] = max(param_group['initial_lr'] * 0.5, 1e-7)
+        param_group['lr'] = max(param_group['lr'] * 0.5, 1e-7)
 
     trainer.scheduler = scheduler
     controller.warmup_aborted = True

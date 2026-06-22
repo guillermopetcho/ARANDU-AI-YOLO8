@@ -232,6 +232,13 @@ def main():
     print("\n[Fase 2] Construyendo Bank Determinístico (una sola vez)...")
     sampled_imgs = random.sample(all_imgs, min(args.samples, len(all_imgs)))
     bank_tensor, valid_paths = build_deterministic_bank(sampled_imgs, model, device, base_t)
+    # CRIT-3 FIX: build_deterministic_bank retorna None si ninguna imagen se procesó
+    # correctamente. Acceder a .shape[0] sobre None causa AttributeError.
+    if bank_tensor is None or len(valid_paths) == 0:
+        print("❌ ERROR: No se pudo procesar ninguna imagen del dataset. "
+              "Verifica que --dataset_path contenga imágenes válidas (.jpg/.png/.jpeg).")
+        import sys
+        sys.exit(1)
     print(f"Bank construido: {bank_tensor.shape[0]} embeddings válidos.")
 
     print("\n[Fase 3] Auditoría de Crops y Curvas SOR")

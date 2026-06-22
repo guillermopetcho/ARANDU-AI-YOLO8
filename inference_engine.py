@@ -194,12 +194,14 @@ class AranduInferenceEngine:
         x = self.transform(img).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            # 1. Extraer Feature y Normalizar
-            z = self.encoder(x, use_predictor=False)
-            z_norm = F.normalize(z, dim=1)
+            # 1. Extraer Feature
+            # MED-1 FIX: ModelBase.forward(use_predictor=False) ya L2-normaliza internamente
+            # (moco.py:296). No se necesita F.normalize() adicional — era la segunda
+            # normalización, y faiss.normalize_L2() sería la tercera.
+            z = self.encoder(x, use_predictor=False)  # Ya es unit-norm
             
             # 2. Linear Head
-            logits = self.head(z_norm)
+            logits = self.head(z)
             probs = F.softmax(logits, dim=1)[0].cpu().numpy()
             
         # 3. Métricas Head Lineal
@@ -209,16 +211,16 @@ class AranduInferenceEngine:
         predicted_class = self.class_names[pred_idx]
         
         # 4. KNN Search
-        z_np = z_norm.cpu().numpy().astype(np.float32)
+        # MED-1 FIX: z ya es unit-norm (ver arriba). Solo necesitamos convertir a float32
+        # contiguos para FAISS. No se llama faiss.normalize_L2 (sería redundante).
+        z_np = np.ascontiguousarray(z.cpu().numpy(), dtype=np.float32)
         if HAS_FAISS:
-            faiss.normalize_L2(z_np)
             distances, indices = self.knn_index.search(z_np, k)
             # En FAISS Inner Product (Cosine sim): distance = 1.0 es identidad.
             # Convertimos a distancia angular aproximada: 1 - sim
             distances = 1.0 - distances[0]
             indices = indices[0]
         else:
-            z_np = z_np / (np.linalg.norm(z_np, axis=1, keepdims=True) + 1e-8)
             distances, indices = self.knn_index.kneighbors(z_np, n_neighbors=k)
             distances = distances[0]
             indices = indices[0]

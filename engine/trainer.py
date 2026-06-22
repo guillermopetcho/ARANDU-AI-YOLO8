@@ -75,7 +75,7 @@ class MoCoTrainer:
                 # HIGH-3 FIX: Loguear crops filtrados en el primer step para hacer visible
                 # una posible misconfiguracion donde TODOS los crops son eliminados.
                 if step == 0 and n_before != len(local_crops) and rank == 0:
-                    import logging
+                    # LOW-3 FIX: logging ya importado globalmente (L2). Import local eliminado.
                     logging.getLogger("AranduSSL").info(
                         f"📐 Curriculum filter (epoch {epoch}<{curriculum_epoch}): "
                         f"{n_before - len(local_crops)}/{n_before} crops eliminados (<96px). "

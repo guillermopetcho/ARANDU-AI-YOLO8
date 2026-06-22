@@ -172,7 +172,8 @@ def train(args):
     logger.info("🔓 FASE B — Descongelando Stage 3 (P5, semántica global).")
     logger.info("─"*50)
 
-    register_backbone(args.encoder, phase=2, use_coord_attn=True)
+    # HIGH-1 FIX: encoder_path=None — pesos vienen del .pt de la fase A.
+    register_backbone(None, phase=2, use_coord_attn=True)
     model = YOLO(fase_a_weights, task="segment")
     lr_B  = apply_phase(model, phase=2, lr=base_lr)
 
@@ -205,7 +206,8 @@ def train(args):
     logger.info(" FASE C — Descongelando Stage 2 (P4, features medias).")
     logger.info("─"*50)
 
-    register_backbone(args.encoder, phase=3, use_coord_attn=True)
+    # HIGH-1 FIX: encoder_path=None — pesos vienen del .pt de la fase B.
+    register_backbone(None, phase=3, use_coord_attn=True)
     model = YOLO(fase_b_weights, task="segment")
     lr_C  = apply_phase(model, phase=3, lr=base_lr)
 
@@ -238,7 +240,8 @@ def train(args):
     logger.info(" FASE D — Full Fine-Tuning. Todo el modelo entrena.")
     logger.info("─"*50)
 
-    register_backbone(args.encoder, phase=4, use_coord_attn=True)
+    # HIGH-1 FIX: encoder_path=None — pesos vienen del .pt de la fase C.
+    register_backbone(None, phase=4, use_coord_attn=True)
     model = YOLO(fase_c_weights, task="segment")
     lr_D  = apply_phase(model, phase=4, lr=base_lr * 0.3)
 

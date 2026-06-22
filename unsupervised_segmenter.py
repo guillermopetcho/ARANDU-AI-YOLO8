@@ -194,10 +194,17 @@ def train_autodidact_segmentation(
     tensor_img = (tensor_img - mean) / std
 
     # 3. Extraer features multi-escala del backbone
+    # AranduBackbone.forward() retorna [P2, P3, P4, P5] en orden de stride ascendente.
+    _P3_INDEX = 1
+    _P3_EXPECTED_CHANNELS = 256  # yolo_channels[1] default en AranduBackbone
     with torch.no_grad():
         features_list = backbone(tensor_img)  # [P2, P3, P4, P5]
-        # Usamos P3 (buena resolución + semántica textural rica)
-        texture_features = features_list[1]   # [B, 256, H/8, W/8]
+        # Usamos P3 (stride 8): balance entre resolución espacial y semántica textural.
+        texture_features = features_list[_P3_INDEX]   # [B, 256, H/8, W/8]
+        assert texture_features.shape[1] == _P3_EXPECTED_CHANNELS, (
+            f"P3 tiene {texture_features.shape[1]} canales pero se esperaban "
+            f"{_P3_EXPECTED_CHANNELS}. Verificar el orden de outputs de AranduBackbone."
+        )
 
     # 4. Inicializar el Segmentador Autodidacta
     in_channels = texture_features.shape[1]

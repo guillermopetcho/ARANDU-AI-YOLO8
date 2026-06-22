@@ -104,11 +104,23 @@ def generate_pseudo_labels(images_dir, output_labels_dir, encoder_path, num_clus
         tensor_img = (tensor_img - mean) / std
         
         # 3. Extraer conocimiento del Encoder
+        # AranduBackbone.forward() retorna [P2, P3, P4, P5] en orden de stride ascendente.
+        # P3 (stride 8, index 1) ofrece el mejor balance entre detalle espacial y
+        # riqueza semántica para clustering de texturas de enfermedad.
+        _P3_INDEX = 1
+        _P3_EXPECTED_CHANNELS = 256  # yolo_channels[1] default en AranduBackbone
         with torch.no_grad():
             features_list = backbone(tensor_img)
-            # P3 es ideal: buen balance entre detalle (1/8 de resolución) y semántica
-            feat = features_list[1][0] # [C, H_f, W_f]
+            # HIGH-3 FIX: Constante nombrada + sanity check de canales para detectar
+            # cambios en el orden de outputs de AranduBackbone en lugar de fallar
+            # silenciosamente con features incorrectas.
+            feat = features_list[_P3_INDEX][0]  # [C, H_f, W_f] — primer (único) elemento del batch
             C, H_f, W_f = feat.shape
+            assert C == _P3_EXPECTED_CHANNELS, (
+                f"P3 tiene {C} canales pero se esperaban {_P3_EXPECTED_CHANNELS}. "
+                f"Verificar que AranduBackbone.forward() siga retornando [P2, P3, P4, P5] "
+                f"y que yolo_channels[1] == {_P3_EXPECTED_CHANNELS}."
+            )
             
             # Normalizar y aplanar para K-Means
             feat_flat = feat.view(C, -1).permute(1, 0).cpu().numpy() # [N, C]

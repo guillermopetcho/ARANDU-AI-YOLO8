@@ -141,7 +141,10 @@ class SpatialFeatureAdapter(nn.Module):
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                # LOW-4 FIX: El adaptador usa SiLU, no ReLU. Para SiLU/Swish,
+                # 'leaky_relu' con a=0.01 es la mejor aproximación de ganancia disponible
+                # en kaiming_normal_ (SiLU no tiene modo propio en PyTorch).
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu', a=0.01)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
         # Beta se inicializa explícitamente en 0 en la declaración del Parameter

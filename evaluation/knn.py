@@ -71,7 +71,7 @@ def extract_features_fast(model, loader, device):
     # Se retornan arrays vacíos para que el caller maneje el caso sin crash.
     if not feats:
         _logger.warning("extract_features_fast: loader vacío — retornando arrays vacíos.")
-        import numpy as np
+        # MED-3 FIX: numpy ya importado globalmente (L4). Import local eliminado.
         return np.zeros((0,), dtype=np.float32), np.zeros((0,), dtype=np.int64)
 
     return torch.cat(feats).numpy(), torch.cat(labels).numpy()

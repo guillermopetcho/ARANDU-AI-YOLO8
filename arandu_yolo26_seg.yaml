@@ -44,6 +44,11 @@ neck:
 # =========================================================
 # HEAD (Segment — 4 escalas P2/P3/P4/P5)
 # =========================================================
+# Segment head: [inputs, repeats, Segment, [nc, nm, hidden_dim]]
+#   nc:         Número de clases (debe coincidir con data.yaml).
+#   nm=32:      Coeficientes de máscara (prototype masks). Valores típicos: 32.
+#               Aumentar a 64 si la segmentación es muy fina pero con coste de memoria.
+#   hidden=256: Dimensión oculta del branch de máscaras. Escalar proporcionalmente
+#               si se cambia nm o si el número de clases supera ~20.
 head:
-  # Segment head inputs, nm=32 (mask coefficients), 256 (hidden features)
   - [[13, 16, 19, 22], 1, Segment, [nc, 32, 256]]

@@ -86,7 +86,7 @@ def active_ocean_synthesis(real_dir, output_dir, encoder, device, target_per_cla
                 embeds.append(get_embedding(encoder, t))
                 valid_paths.append(p)
                 pil_images.append(img)
-            except: pass
+            except Exception: pass
             
         bank = torch.cat(embeds, dim=0) # (N, D)
         centroid = bank.mean(dim=0, keepdim=True)

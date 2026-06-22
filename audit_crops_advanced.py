@@ -64,15 +64,17 @@ def compute_class_centroids(dataset_path, model, device, base_t, max_per_class=1
                 img = Image.open(p).convert('RGB')
                 e = F.normalize(model(base_t(img).unsqueeze(0).to(device)), dim=-1)
                 embs.append(e)
-            except: pass
+            except Exception: pass
         if embs:
             center = torch.cat(embs, dim=0).mean(dim=0, keepdim=True)
             centroids[cls] = F.normalize(center, dim=-1)
     return centroids
 
 @torch.no_grad()
-def ablation_curves(img_paths, model, device, centroids, scales=[512, 384, 320, 256, 224, 192, 160, 128, 96]):
+def ablation_curves(img_paths, model, device, centroids, scales=None):
     """Bloque A (R(s)) y Bloque B (B(s))"""
+    if scales is None:
+        scales = [512, 384, 320, 256, 224, 192, 160, 128, 96]
     base_t = T.Compose([
         T.Resize((512, 512)),
         T.ToTensor(),
@@ -101,7 +103,7 @@ def ablation_curves(img_paths, model, device, centroids, scales=[512, 384, 320, 
                 # Bloque B: Biological Retention
                 if centroids and true_class in centroids:
                     retention_bio[s].append(F.cosine_similarity(e_s, centroids[true_class]).item())
-        except: pass
+        except Exception: pass
         
     return {
         "R_s": {s: np.mean(vals) if vals else 0.0 for s, vals in retention_geom.items()},
@@ -120,7 +122,7 @@ def audit_images(img_paths, model, device, global_size, local_size, local_scale,
         try:
             img = Image.open(img_path).convert('RGB')
             true_class = Path(img_path).parent.name
-        except: continue
+        except Exception: continue
             
         other_imgs = random.sample([p for p in img_paths if p != img_path], min(5, len(img_paths)-1))
         e_others = []
@@ -128,7 +130,7 @@ def audit_images(img_paths, model, device, global_size, local_size, local_scale,
             try:
                 oimg = Image.open(opath).convert('RGB')
                 e_others.append(F.normalize(model(global_t(oimg).unsqueeze(0).to(device)), dim=-1))
-            except: pass
+            except Exception: pass
             
         img_A, img_S, img_M = [], [], []
         img_bio_hits, img_bio_margins, img_gaps_healthy = [], [], []
@@ -195,7 +197,7 @@ def compute_mahalanobis(candidates_G, baseline_G):
     cov_reg = cov_base + np.eye(cov_base.shape[0]) * 1e-5
     
     try: inv_cov = scipy.linalg.inv(cov_reg)
-    except: inv_cov = np.eye(cov_base.shape[0])
+    except Exception: inv_cov = np.eye(cov_base.shape[0])
         
     mu_cand = np.mean(candidates_G, axis=0)
     diff = mu_cand - mu_base

@@ -34,9 +34,15 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
         self.images_dir = os.path.join(root, "images")
         self.labels_dir = os.path.join(root, "labels")
         
-        self.image_files = []
-        for ext in ('*.jpg', '*.jpeg', '*.png', '*.webp', '*.bmp', '*.tiff', '*.tif', '*.JPG', '*.JPEG', '*.PNG', '*.WEBP', '*.BMP', '*.TIFF', '*.TIF'):
-            self.image_files.extend(glob.glob(os.path.join(self.images_dir, ext)))
+        # MED-2 FIX: Usar suffix.lower() en lugar de listar cada extensión en mayúsculas
+        # y minúsculas (14 globs). En filesystems case-insensitive (macOS, Windows), el
+        # patrón anterior generaba duplicados. Ahora es consistente con moco.py:226-227.
+        _IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif"}
+        from pathlib import Path
+        self.image_files = sorted([
+            str(f) for f in Path(self.images_dir).iterdir()
+            if f.is_file() and f.suffix.lower() in _IMG_EXTS
+        ])
 
         # --- Inferencia de clases reales desde data.yaml ---
         self.classes = self._load_class_names(data_yaml_path)
