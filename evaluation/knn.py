@@ -47,21 +47,26 @@ def get_faiss_resources():
 
 @torch.no_grad()
 def extract_features_fast(model, loader, device):
-    """Extrae features usando el encoder (sin predictor).
+    """Extrae features usando el backbone encoder (768-dim si está disponible, o projector).
 
     El modelo debe estar en .eval() antes de llamar a esta función.
     Retorna arrays numpy en CPU, listos para KNN o Linear Probe.
     """
     feats, labels = [], []
+    raw_model = model
+    if hasattr(raw_model, 'module'):
+        raw_model = raw_model.module
+    if hasattr(raw_model, '_orig_mod'):
+        raw_model = raw_model._orig_mod
+
     for x, y in loader:
         x = x.to(device, non_blocking=True)
-        # F1 FIX: Llamar siempre con use_predictor=False para asegurar
-        # que se usan las representaciones del projector, no del predictor.
-        # Soporta tanto ModelBase directo como modelos envueltos (DDP/compile).
         try:
-            z = model(x, use_predictor=False)
+            if hasattr(raw_model, 'forward_backbone'):
+                z = raw_model.forward_backbone(x)
+            else:
+                z = model(x, use_predictor=False)
         except TypeError:
-            # Fallback: si el modelo no acepta el kwarg (ej. resnet crudo)
             z = model(x)
         feats.append(z.cpu())
         labels.append(y)

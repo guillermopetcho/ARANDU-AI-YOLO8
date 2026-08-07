@@ -508,15 +508,19 @@ def main():
             # C2 FIX: Linear probe usa weights_only=True
             best_ckpt = torch.load(best_ckpt_file, map_location=device, weights_only=True)
 
-            clean_model_q = {
+            # EMA TEACHER EXPORT: Usar model_k (EMA teacher) en lugar de model_q (student).
+            # DINO v2 / BYOL demuestran que el teacher produce representaciones de mayor
+            # calidad que el student, porque el promedio exponencial suaviza el ruido
+            # del gradiente estocástico y produce un manifold más estable.
+            clean_model_k = {
                 k.replace("_orig_mod.", "").replace("module.", ""): v
-                for k, v in best_ckpt["model_q"].items()
+                for k, v in best_ckpt["model_k"].items()
             }
             eval_model_base = ModelBase(
                 dim=CONFIG["moco"]["dim"],
                 predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 1024)
             ).to(device)
-            res = eval_model_base.load_state_dict(clean_model_q, strict=False)
+            res = eval_model_base.load_state_dict(clean_model_k, strict=False)
             if res.missing_keys: logger.warning(f" Linear Probe model missing keys: {res.missing_keys}")
             if res.unexpected_keys: logger.warning(f" Linear Probe model unexpected keys: {res.unexpected_keys}")
 
@@ -546,8 +550,9 @@ def main():
 
             # El encoder SSL se exporta SIEMPRE — es válido independientemente del
             # Linear Probe. Solo head/metrics/class_names son condicionales.
-            torch.save(clean_model_q, CONFIG["paths"]["encoder_export_path"])
-            logger.info(" Listo.")
+            # Se exporta model_k (EMA teacher) para representaciones de mayor calidad.
+            torch.save(clean_model_k, CONFIG["paths"]["encoder_export_path"])
+            logger.info(" Listo. (Exportado: EMA Teacher / model_k)")
 
 
 if __name__ == "__main__":

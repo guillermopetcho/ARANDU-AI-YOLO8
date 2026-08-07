@@ -1,0 +1,620 @@
+import copy
+import importlib.resources as pkg_resources
+import logging
+import os
+import pathlib
+import shutil
+import ssl
+import tempfile
+import time
+import urllib.request
+import zipfile
+from threading import Lock
+
+import yaml
+from huggingface_hub import snapshot_download
+from PyQt6.QtCore import QCoreApplication, QObject, QThread, pyqtSignal, pyqtSlot
+
+from anylabeling.config import get_config, save_config
+from anylabeling.configs import auto_labeling as auto_labeling_configs
+from anylabeling.services.auto_labeling.types import AutoLabelingResult
+from anylabeling.utils import GenericWorker
+
+from .registry import ModelRegistry
+
+ssl._create_default_https_context = (
+    ssl._create_unverified_context
+)  # Prevent issue when downloading models behind a proxy
+
+
+class ModelManager(QObject):
+    """Model manager"""
+
+    MAX_NUM_CUSTOM_MODELS = 5
+
+    model_configs_changed = pyqtSignal(list)
+    new_model_status = pyqtSignal(str)
+    model_loaded = pyqtSignal(dict)
+    new_auto_labeling_result = pyqtSignal(AutoLabelingResult)
+    auto_segmentation_model_selected = pyqtSignal()
+    auto_segmentation_model_unselected = pyqtSignal()
+    prediction_started = pyqtSignal()
+    prediction_finished = pyqtSignal()
+    model_loading_started = pyqtSignal()
+    model_loading_finished = pyqtSignal()
+    request_next_files_requested = pyqtSignal()
+    output_modes_changed = pyqtSignal(dict, str)
+
+    def __init__(self):
+        super().__init__()
+        self.model_configs = []
+
+        self.loaded_model_config = None
+        self.loaded_model_config_lock = Lock()
+
+        self.model_download_worker = None
+        self.model_download_thread = None
+        self.model_execution_thread = None
+        self.model_execution_worker = None
+        self.model_execution_thread_lock = Lock()
+
+        self.last_status_update_time = 0
+
+        self.load_model_configs()
+
+    def load_model_configs(self):
+        """Load model configs"""
+        # Load list of default models
+        with pkg_resources.open_text(auto_labeling_configs, "models.yaml") as f:
+            model_list = yaml.safe_load(f)
+            for model in model_list:
+                model["is_custom_model"] = False
+
+            # Check downloaded
+            for model in model_list:
+                home_dir = os.path.expanduser("~")
+                model_download_path = os.path.join(
+                    home_dir, "anylabeling_data", "models", model["name"]
+                )
+                pathlib.Path(model_download_path).mkdir(parents=True, exist_ok=True)
+                config_file = os.path.join(model_download_path, "config.yaml")
+                model["config_file"] = config_file
+
+                # Initialize model config if needed
+                if not os.path.isfile(config_file):
+                    model["has_downloaded"] = False
+                    with open(config_file, "w") as f:
+                        yaml.dump(model, f)
+
+        # Load list of custom models
+        custom_models = get_config().get("custom_models", [])
+        for custom_model in custom_models:
+            custom_model["is_custom_model"] = True
+            custom_model["has_downloaded"] = True
+
+        # Remove invalid/not found custom models
+        custom_models = [
+            custom_model
+            for custom_model in custom_models
+            if os.path.isfile(custom_model.get("config_file", ""))
+        ]
+        config = get_config()
+        config["custom_models"] = custom_models
+        save_config(config)
+
+        model_list += custom_models
+
+        # Load model configs
+        model_configs = []
+        for model in model_list:
+            model_config = copy.deepcopy(model)
+            config_file = model.get("config_file", None)
+            if config_file:
+                # Use utf-8-sig to strip any UTF-8 BOM that may be present in
+                # config files created on Windows (BOM in the first key would
+                # turn "type" into "\ufefftype", causing a KeyError on load).
+                with open(config_file, encoding="utf-8-sig") as f:
+                    file_config = yaml.safe_load(f)
+                # Overlay file config on top of master config so that fields
+                # present in models.yaml (e.g. "type") are never lost even if
+                # the on-disk file is missing them.
+                model_config.update(file_config)
+                model_config["config_file"] = os.path.normpath(
+                    os.path.abspath(config_file)
+                )
+                model_config["is_custom_model"] = model.get("is_custom_model", False)
+            model_configs.append(model_config)
+
+        # Sort by last used
+        for i, model_config in enumerate(model_configs):
+            # Keep order for integrated models
+            if not model_config.get("is_custom_model", False):
+                model_config["last_used"] = -i
+            else:
+                model_config["last_used"] = model_config.get("last_used", time.time())
+        model_configs.sort(key=lambda x: x.get("last_used", 0), reverse=True)
+
+        self.model_configs = model_configs
+        self.model_configs_changed.emit(model_configs)
+
+    def get_model_configs(self):
+        """Return model infos"""
+        return self.model_configs
+
+    def set_output_mode(self, mode):
+        """Set output mode"""
+        if self.loaded_model_config and self.loaded_model_config["model"]:
+            self.loaded_model_config["model"].set_output_mode(mode)
+
+    @pyqtSlot()
+    def on_model_download_finished(self):
+        """Handle model download thread finished"""
+        if self.model_download_thread:
+            try:
+                self.model_download_thread.quit()
+                if not self.model_download_thread.wait(1000):
+                    logging.warning("Model download thread did not stop in time")
+            except RuntimeError:
+                pass
+            self.model_download_thread = None
+        self.model_download_worker = None
+
+        if self.loaded_model_config and self.loaded_model_config.get("model"):
+            model_type = self.loaded_model_config.get("type")
+            if model_type == "segment_anything":
+                self.auto_segmentation_model_selected.emit()
+                self.request_next_files_requested.emit()
+            else:
+                self.auto_segmentation_model_unselected.emit()
+
+            self.new_model_status.emit(self.tr("Model loaded. Ready for labeling."))
+            self.model_loaded.emit(self.loaded_model_config)
+            self.output_modes_changed.emit(
+                self.loaded_model_config["model"].Meta.output_modes,
+                self.loaded_model_config["model"].Meta.default_output_mode,
+            )
+        else:
+            self.auto_segmentation_model_unselected.emit()
+            self.model_loaded.emit({})
+        self.model_loading_finished.emit()
+
+    def load_custom_model(self, config_file):
+        """Run custom model loading in a thread"""
+        config_file = os.path.normpath(os.path.abspath(config_file))
+        if (
+            self.model_download_thread is not None
+            and self.model_download_thread.isRunning()
+        ):
+            print("Another model is being loaded. Please wait for it to finish.")
+            return
+
+        # Check config file path
+        if not config_file or not os.path.isfile(config_file):
+            self.new_model_status.emit(
+                self.tr("Error in loading custom model: Invalid path.")
+            )
+            return
+
+        # Check config file content
+        model_config = {}
+        with open(config_file, encoding="utf-8-sig") as f:
+            model_config = yaml.safe_load(f)
+            model_config["config_file"] = os.path.abspath(config_file)
+        if not model_config:
+            self.new_model_status.emit(
+                self.tr("Error in loading custom model: Invalid config file.")
+            )
+            return
+        if (
+            "type" not in model_config
+            or "display_name" not in model_config
+            or "name" not in model_config
+            or model_config["type"] not in ["segment_anything", "yolov5", "yolov8"]
+        ):
+            self.new_model_status.emit(
+                self.tr("Error in loading custom model: Invalid config file format.")
+            )
+            return
+
+        # Add or replace custom model
+        custom_models = get_config().get("custom_models", [])
+        matched_index = None
+        for i, model in enumerate(custom_models):
+            if os.path.normpath(model["config_file"]) == os.path.normpath(config_file):
+                matched_index = i
+                break
+        if matched_index is not None:
+            model_config["last_used"] = time.time()
+            custom_models[matched_index] = model_config
+        else:
+            if len(custom_models) >= self.MAX_NUM_CUSTOM_MODELS:
+                custom_models.sort(key=lambda x: x.get("last_used", 0), reverse=True)
+                removed_model = custom_models.pop()
+                # Remove old model folder
+                config_file = removed_model["config_file"]
+                if os.path.exists(config_file):
+                    try:
+                        pathlib.Path(config_file).parent.rmdir()
+                    except OSError:
+                        pass
+            custom_models = [model_config] + custom_models
+
+        # Save config
+        config = get_config()
+        config["custom_models"] = custom_models
+        save_config(config)
+
+        # Reload model configs
+        self.load_model_configs()
+        QCoreApplication.processEvents()
+
+        # Load model
+        self.load_model(model_config["config_file"])
+
+    def load_model(self, config_file):
+        """Run model loading in a thread"""
+        if (
+            (self.model_download_thread is not None and self.model_download_thread.isRunning())
+            or (self.model_execution_thread is not None and self.model_execution_thread.isRunning())
+        ):
+            print("Another model operation is being executed. Please wait for it to finish.")
+            return
+        if not config_file:
+            if self.model_download_worker is not None:
+                try:
+                    self.model_download_worker.finished.disconnect(
+                        self.on_model_download_finished
+                    )
+                except TypeError:
+                    pass
+            self.unload_model()
+            self.new_model_status.emit(self.tr("No model selected."))
+            return
+
+        # Check and get model id
+        model_id = None
+        for i, model_config in enumerate(self.model_configs):
+            if model_config["config_file"] == config_file:
+                model_id = i
+                break
+        if model_id is None:
+            self.new_model_status.emit(
+                self.tr("Error in loading model: Invalid model name.")
+            )
+            return
+
+        self.model_loading_started.emit()
+        self.model_download_thread = QThread()
+        self.new_model_status.emit(
+            self.tr("Loading model: {model_name}. Please wait...").format(
+                model_name=self.model_configs[model_id]["display_name"]
+            )
+        )
+        QCoreApplication.processEvents()
+        self.model_download_worker = GenericWorker(self._load_model, model_id)
+        self.model_download_worker.finished.connect(self.on_model_download_finished)
+        self.model_download_worker.finished.connect(self.model_download_thread.quit)
+        self.model_download_worker.finished.connect(
+            self.model_download_worker.deleteLater
+        )
+        self.model_download_thread.finished.connect(
+            self.model_download_thread.deleteLater
+        )
+        self.model_download_worker.moveToThread(self.model_download_thread)
+        self.model_download_thread.started.connect(self.model_download_worker.run)
+        self.model_download_thread.start()
+
+    def download_zip(self, tmp_dir, download_url):
+        zip_model_path = os.path.join(tmp_dir, "model.zip")
+
+        # Download url
+        ellipsis_download_url = download_url
+        if len(download_url) > 40:
+            ellipsis_download_url = download_url[:20] + "..." + download_url[-20:]
+        logging.info("Downloading %s to %s", ellipsis_download_url, zip_model_path)
+        try:
+            # Download and show progress
+            self.last_status_update_time = 0
+
+            def _progress(count, block_size, total_size):
+                now = time.time()
+                if now - self.last_status_update_time < 0.2:  # Throttle to 5 FPS
+                    return
+                self.last_status_update_time = now
+                percent = int(count * block_size * 100 / total_size)
+                self.new_model_status.emit(
+                    QCoreApplication.translate(
+                        "Model", "Downloading {download_url}: {percent}%"
+                    ).format(download_url=ellipsis_download_url, percent=percent)
+                )
+
+            urllib.request.urlretrieve(
+                download_url, zip_model_path, reporthook=_progress
+            )
+        except Exception as e:  # noqa
+            print(f"Could not download {download_url}: {e}")
+            self.new_model_status.emit(f"Could not download {download_url}")
+            return None
+        # Extract model
+        tmp_extract_dir = os.path.join(tmp_dir, "extract")
+        with zipfile.ZipFile(zip_model_path, "r") as zip_ref:
+            zip_ref.extractall(tmp_extract_dir)
+            # Find model folder (containing config.yaml)
+        model_folder = None
+        for root, _, files in os.walk(tmp_extract_dir):
+            if "config.yaml" in files:
+                model_folder = root
+                break
+        if model_folder is None:
+            raise ValueError(self.tr("Could not find config.yaml in zip file."))
+        return model_folder
+
+    def download_hf(self, tmp_dir, download_url, model_config):
+        repo_id = download_url.replace("https://huggingface.co/", "").strip("/")
+        # Only take the first two segments: namespace/repo_name
+        repo_id = "/".join(repo_id.split("/")[:2])
+
+        tmp_extract_dir = os.path.join(tmp_dir, "extract")
+        snapshot_download(
+            repo_id=repo_id,
+            local_dir=tmp_extract_dir,  # where to store everything
+        )
+        with open(tmp_extract_dir + "/config.yaml", "w") as f:
+            yaml.dump(model_config, f, default_flow_style=False)
+        return tmp_extract_dir
+
+    def _download_and_extract_model(self, model_config):
+        """Download and extract a model from model config"""
+        config_file = model_config["config_file"]
+        extract_dir = os.path.dirname(config_file)
+        # Check if model is already downloaded
+        if not os.path.exists(config_file):
+            raise ValueError(self.tr("Error in loading config file."))
+        with open(config_file, encoding="utf-8-sig") as f:
+            model_config = yaml.safe_load(f)
+        if model_config.get("has_downloaded", False):
+            return
+
+        # Download model
+        download_url = model_config.get("download_url", None)
+        if not download_url:
+            raise ValueError(self.tr("Missing download_url in config file."))
+
+        tmp_dir = tempfile.mkdtemp()
+        model_folder = None
+        if download_url.endswith(".zip"):
+            model_folder = self.download_zip(tmp_dir, download_url)
+        elif download_url.startswith("https://huggingface.co"):
+            model_folder = self.download_hf(tmp_dir, download_url, model_config)
+
+        if model_folder is None:
+            shutil.rmtree(tmp_dir)
+            raise ValueError(self.tr("Could not download model."))
+
+        # Move model folder to correct location
+        shutil.rmtree(extract_dir)
+        shutil.move(model_folder, extract_dir)
+
+        # Clean up
+        shutil.rmtree(tmp_dir)
+
+        # Update config file – use utf-8-sig to strip any BOM introduced
+        # by Windows tools when the zip was created.
+        with open(config_file, encoding="utf-8-sig") as f:
+            model_config = yaml.safe_load(f)
+        model_config["has_downloaded"] = True
+        model_config["config_file"] = config_file
+        with open(config_file, "w", encoding="utf-8") as f:
+            yaml.dump(model_config, f)
+
+        return model_config
+
+    def _load_model(self, model_id):
+        """Load and return model info"""
+        if self.loaded_model_config is not None:
+            try:
+                if "model" in self.loaded_model_config and self.loaded_model_config["model"]:
+                    self.loaded_model_config["model"].unload()
+            except Exception:
+                pass
+            self.loaded_model_config = None
+
+        model_config = copy.deepcopy(self.model_configs[model_id])
+
+        # Download and extract model
+        if not model_config.get("has_downloaded", True):
+            model_config = self._download_and_extract_model(model_config)
+            if model_config is None:
+                return
+
+            self.model_configs[model_id].update(model_config)
+
+        model_type = model_config["type"]
+        model_class = ModelRegistry.get(model_type)
+
+        if not model_class:
+            raise Exception(f"Unknown model type: {model_type}")
+
+        try:
+            model_config["model"] = model_class(
+                model_config, on_message=self.new_model_status.emit
+            )
+        except Exception as e:  # noqa
+            self.new_model_status.emit(self.tr(f"Error in loading model: {str(e)}"))
+            print(f"Error in loading model: {str(e)}")
+            return
+
+        self.loaded_model_config = model_config
+        return self.loaded_model_config
+
+    def stop_inference(self):
+        """Stop any active background inference and reset state."""
+        with self.model_execution_thread_lock:
+            if self.loaded_model_config and "model" in self.loaded_model_config:
+                model = self.loaded_model_config["model"]
+                if model:
+                    if hasattr(model, "stop_pre_inference"):
+                        try:
+                            model.stop_pre_inference()
+                        except Exception:
+                            pass
+                    if hasattr(model, "stop_inference"):
+                        model.stop_inference = True
+                    if hasattr(model, "set_auto_labeling_marks"):
+                        try:
+                            model.set_auto_labeling_marks([])
+                        except Exception:
+                            pass
+            self._is_predicting = False
+            if self.model_download_thread and self.model_download_thread.isRunning():
+                try:
+                    self.model_download_thread.quit()
+                except Exception:
+                    pass
+            self.model_loading_finished.emit()
+            self.prediction_finished.emit()
+            import gc
+            gc.collect()
+
+    def set_auto_labeling_marks(self, marks):
+        """Set auto labeling marks safely with thread locking"""
+        with self.model_execution_thread_lock:
+            if (
+                self.loaded_model_config is None
+                or "model" not in self.loaded_model_config
+                or self.loaded_model_config["model"] is None
+            ):
+                return
+            model = self.loaded_model_config["model"]
+            if hasattr(model, "set_auto_labeling_marks"):
+                try:
+                    model.set_auto_labeling_marks(marks)
+                except Exception:
+                    pass
+
+    def set_text_prompt(self, text):
+        """Set text prompt"""
+        if self.loaded_model_config and self.loaded_model_config["model"]:
+            if hasattr(self.loaded_model_config["model"], "set_text_prompt"):
+                self.loaded_model_config["model"].set_text_prompt(text)
+
+    def set_prompt_mode(self, mode):
+        """Set prompt mode"""
+        if self.loaded_model_config and self.loaded_model_config["model"]:
+            if hasattr(self.loaded_model_config["model"], "set_prompt_mode"):
+                self.loaded_model_config["model"].set_prompt_mode(mode)
+
+    def set_confidence_threshold(self, value):
+        """Set confidence threshold"""
+        if self.loaded_model_config and self.loaded_model_config["model"]:
+            if hasattr(self.loaded_model_config["model"], "set_confidence_threshold"):
+                self.loaded_model_config["model"].set_confidence_threshold(value)
+
+    def unload_model(self):
+        """Unload model"""
+        if (
+            self.model_execution_thread is not None
+            and self.model_execution_thread.isRunning()
+        ) or (
+            self.model_download_thread is not None
+            and self.model_download_thread.isRunning()
+        ):
+            return
+        if self.loaded_model_config is not None:
+            self.loaded_model_config["model"].unload()
+            self.loaded_model_config = None
+
+    def predict_shapes(self, image, filename=None):
+        """Predict shapes.
+        NOTE: This function is blocking. The model can take a long time to
+        predict. So it is recommended to use predict_shapes_threading instead.
+        """
+        if self.loaded_model_config is None:
+            self.new_model_status.emit(
+                self.tr("Model is not loaded. Choose a mode to continue.")
+            )
+            self.prediction_finished.emit()
+            return
+        try:
+            auto_labeling_result = self.loaded_model_config["model"].predict_shapes(
+                image, filename
+            )
+            self.new_auto_labeling_result.emit(auto_labeling_result)
+        except Exception as e:  # noqa
+            print(f"Error in predict_shapes: {e}")
+            self.new_model_status.emit(
+                self.tr("Error in model prediction. Please check the model.")
+            )
+        finally:
+            self._is_predicting = False
+            self.new_model_status.emit(
+                self.tr("Finished inferencing AI model. Check the result.")
+            )
+            self.prediction_finished.emit()
+            import gc
+            gc.collect()
+
+    @pyqtSlot()
+    def predict_shapes_threading(self, image, filename=None):
+        """Predict shapes.
+        This function starts a thread to run the prediction.
+        """
+        if self.loaded_model_config is None:
+            self.new_model_status.emit(
+                self.tr("Model is not loaded. Choose a mode to continue.")
+            )
+            return
+
+        # Make a deep copy of QImage/QPixmap on main thread to prevent background thread reading freed C++ memory
+        if image is not None and hasattr(image, "copy"):
+            try:
+                image = image.copy()
+            except Exception:
+                pass
+
+        with self.model_execution_thread_lock:
+            # If a model download or prediction thread is already running or active, ignore rapid re-entry
+            # to prevent C++ ONNX session mutation race conditions and app crashes.
+            if (
+                getattr(self, "_is_predicting", False)
+                or (self.model_download_thread is not None and self.model_download_thread.isRunning())
+                or (self.model_execution_thread is not None and self.model_execution_thread.isRunning())
+            ):
+                self.prediction_finished.emit()
+                return
+
+            self._is_predicting = True
+
+            self.new_model_status.emit(self.tr("Inferencing AI model. Please wait..."))
+            self.prediction_started.emit()
+
+            self.model_execution_thread = QThread()
+            self.model_execution_worker = GenericWorker(
+                self.predict_shapes, image, filename
+            )
+            self.model_execution_worker.finished.connect(
+                self.model_execution_thread.quit
+            )
+            self.model_execution_worker.finished.connect(
+                self.model_execution_worker.deleteLater
+            )
+            self.model_execution_thread.finished.connect(
+                lambda: setattr(self, "model_execution_thread", None)
+            )
+            self.model_execution_thread.finished.connect(
+                self.model_execution_thread.deleteLater
+            )
+            self.model_execution_worker.moveToThread(self.model_execution_thread)
+            self.model_execution_thread.started.connect(self.model_execution_worker.run)
+            self.model_execution_thread.start()
+
+    def on_next_files_changed(self, next_files):
+        """Run prediction on next files in advance to save inference time later"""
+        if self.loaded_model_config is None:
+            return
+
+        # Currently only segment_anything model supports this feature
+        if self.loaded_model_config["type"] != "segment_anything":
+            return
+
+        self.loaded_model_config["model"].on_next_files_changed(next_files)

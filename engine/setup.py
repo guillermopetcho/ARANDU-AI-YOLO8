@@ -47,6 +47,22 @@ class YOLOClassificationDataset(torch.utils.data.Dataset):
         # --- Inferencia de clases reales desde data.yaml ---
         self.classes = self._load_class_names(data_yaml_path)
         
+        # --- Pre-cargar etiquetas (self.targets) para Stratified Sampling ---
+        self.targets = []
+        for img_path in self.image_files:
+            label_path = os.path.join(self.labels_dir, os.path.splitext(os.path.basename(img_path))[0] + ".txt")
+            cid = 0
+            if os.path.exists(label_path):
+                try:
+                    with open(label_path, 'r') as f:
+                        line = f.readline().strip()
+                        if line:
+                            raw_id = int(line.split()[0])
+                            cid = min(raw_id, len(self.classes) - 1)
+                except Exception:
+                    pass
+            self.targets.append(cid)
+        
     def _load_class_names(self, data_yaml_path):
         """Intenta cargar los nombres de clase reales desde el data.yaml del dataset YOLO.
         
@@ -199,12 +215,37 @@ def resolve_kaggle_paths(paths_config, rank=0):
 
 
 def make_eval_subset_loader(eval_ds, subset_size: int, num_workers: int, batch_size: int = 32) -> DataLoader:
-    """Crea un DataLoader con un subconjunto aleatorio del dataset de evaluación.
+    """Crea un DataLoader con un subconjunto estratificado del dataset de evaluación.
 
-    Cada llamada genera un nuevo subconjunto independiente, permitiendo
-    rerandomizar periódicamente y obtener estimaciones no sesgadas de KNN.
+    Intenta realizar un muestreo estratificado (por clase) para evitar desbalance
+    en la evaluación KNN o Linear Probe. Si no es posible, realiza muestreo aleatorio.
     """
-    indices = torch.randperm(len(eval_ds))[:min(subset_size, len(eval_ds))].tolist()
+    total_len = len(eval_ds)
+    if subset_size >= total_len:
+        indices = list(range(total_len))
+    else:
+        targets = getattr(eval_ds, 'targets', None)
+        if targets is None and hasattr(eval_ds, 'samples'):
+            targets = [s[1] for s in eval_ds.samples]
+
+        indices = None
+        if targets is not None and len(targets) == total_len:
+            try:
+                import numpy as np
+                from sklearn.model_selection import train_test_split
+                indices, _ = train_test_split(
+                    np.arange(total_len),
+                    train_size=subset_size,
+                    stratify=targets,
+                    random_state=None
+                )
+                indices = indices.tolist()
+            except Exception:
+                indices = None
+
+        if indices is None:
+            indices = torch.randperm(total_len)[:subset_size].tolist()
+
     return DataLoader(
         Subset(eval_ds, indices), batch_size=batch_size,
         num_workers=num_workers, pin_memory=True,
@@ -273,12 +314,9 @@ def build_model(CONFIG, is_distributed, device, rank, local_rank):
         predictor_hidden_dim=CONFIG["moco"].get("predictor_hidden_dim", 1024)
     ).to(device, memory_format=torch.channels_last)
 
-    # B3 FIX: SyncBatchNorm no tiene efecto sobre ModelBase (usa LayerNorm, no BN).
-    # Se elimina la llamada innecesaria para evitar confusión y posibles conflictos
-    # si en el futuro se añaden capas BN explícitamente.
-    # Si el modelo volviera a usar BN, descomentar la siguiente línea:
-    # if is_distributed:
-    #     model_base_raw = nn.SyncBatchNorm.convert_sync_batchnorm(model_base_raw)
+    # SyncBatchNorm para sincronizar estadísticas de BatchNorm1d en el Projector y Predictor
+    if is_distributed:
+        model_base_raw = nn.SyncBatchNorm.convert_sync_batchnorm(model_base_raw)
 
     model_q = copy.deepcopy(model_base_raw)
     model_k = copy.deepcopy(model_base_raw).to(device, memory_format=torch.channels_last)

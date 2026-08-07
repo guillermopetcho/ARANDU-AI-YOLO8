@@ -115,171 +115,266 @@ def train(args):
 
     logger.info("=" * 60)
     logger.info("🌱 ARANDU-AI YOLO SEGMENTATION — Entrenamiento con Currículum SSL 🌱")
-    logger.info(f"   Dataset  : {args.data}")
-    logger.info(f"   Encoder  : {args.encoder}")
-    logger.info(f"   Épocas   : {args.epochs} | Batch: {args.batch} | Imgsz: {args.imgsz}")
+    logger.info(f"   Dataset      : {args.data}")
+    logger.info(f"   Encoder      : {args.encoder}")
+    logger.info(f"   Épocas       : {args.epochs} | Batch: {args.batch} | Imgsz: {args.imgsz}")
+    logger.info(f"   Modo         : {'🚀 FAST (2 Fases)' if args.fast else '🐢 STANDARD (4 Fases)'}")
+    logger.info(f"   Cache RAM/Disk: {args.cache} | Workers: {args.workers}")
     logger.info("=" * 60)
 
-    epochs_A = min(10, args.epochs // 4)
-    epochs_B = min(15, args.epochs // 4)
-    epochs_C = min(15, args.epochs // 4)
-    epochs_D = max(1, args.epochs - epochs_A - epochs_B - epochs_C)
+    project      = args.project
+    base_lr      = args.lr
+    imgsz        = args.imgsz
+    batch        = args.batch
+    device       = int(os.environ["LOCAL_RANK"]) if "LOCAL_RANK" in os.environ else args.device
+    workers      = args.workers
+    cache_opt    = None if args.cache.lower() in ("none", "false") else args.cache.lower()
+    close_mosaic = args.close_mosaic
 
-    logger.info(f"📋 Distribución de fases: A={epochs_A} | B={epochs_B} | C={epochs_C} | D={epochs_D}")
 
-    project  = args.project
-    base_lr  = args.lr
-    imgsz    = args.imgsz
-    batch    = args.batch
-    device   = args.device
+    model_yaml   = args.cfg if args.cfg else ("arandu_yolo26_slim_seg.yaml" if args.slim else "arandu_yolo26_seg.yaml")
+    logger.info(f"   Modelo Spec  : {model_yaml}")
 
-    # ── FASE A: Solo adaptadores ──────────────────────────────────────────
-    logger.info("\n" + "─"*50)
-    logger.info(" FASE A — Backbone congelado. Solo SpatialFeatureAdapters.")
-    logger.info("─"*50)
+    if args.fast:
+        # ── MODO ACELERADO (2 Fases) ─────────────────────────────────────────
+        epochs_warmup = max(3, min(5, args.epochs // 5))
+        epochs_ft     = max(1, args.epochs - epochs_warmup)
+        logger.info(f"📋 Distribución FAST: Warmup Adaptadores={epochs_warmup} épocas | Fine-Tuning={epochs_ft} épocas")
 
-    register_backbone(args.encoder, phase=1, use_coord_attn=True)
-    # IMPORTANTE: Cargamos el YAML de segmentación y forzamos la tarea 'segment'
-    model = YOLO("arandu_yolo26_seg.yaml", task="segment")
-    lr_A  = apply_phase(model, phase=1, lr=base_lr)
+        # ── FASE 1: Warmup solo Adaptadores (Backbone congelado) ─────────────
+        logger.info("\n" + "─"*50)
+        logger.info("⚡ FASE 1/2 — Warmup de Adaptadores (Backbone congelado)")
+        logger.info("─"*50)
 
-    model.train(
-        task      = "segment",
-        data      = args.data,
-        epochs    = epochs_A,
-        imgsz     = imgsz,
-        batch     = batch,
-        lr0       = lr_A,
-        lrf       = 0.1,
-        weight_decay = 0.0005,
-        warmup_epochs = 2,
-        optimizer = "AdamW",
-        amp       = True,
-        device    = device,
-        project   = project,
-        name      = "FaseA_Adapters",
-        seed      = 42,
-        verbose   = True,
-        save      = True,
-        exist_ok  = True,
-    )
+        register_backbone(args.encoder, phase=1, use_coord_attn=True)
+        model = YOLO(model_yaml, task="segment")
 
-    fase_a_weights = os.path.join(project, "FaseA_Adapters", "weights", "last.pt")
-    logger.info(f" Fase A completada → {fase_a_weights}")
+        lr_w  = apply_phase(model, phase=1, lr=base_lr)
 
-    # ── FASE B: Descongelar P5 (Stage 3) ─────────────────────────────────
-    logger.info("\n" + "─"*50)
-    logger.info("🔓 FASE B — Descongelando Stage 3 (P5, semántica global).")
-    logger.info("─"*50)
+        model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_warmup,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_w,
+            lrf           = 0.1,
+            weight_decay  = 0.0005,
+            warmup_epochs = 1,
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "Fast_Fase1_Warmup",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+        )
 
-    # HIGH-1 FIX: encoder_path=None — pesos vienen del .pt de la fase A.
-    register_backbone(None, phase=2, use_coord_attn=True)
-    model = YOLO(fase_a_weights, task="segment")
-    lr_B  = apply_phase(model, phase=2, lr=base_lr)
+        fase1_weights = os.path.join(project, "Fast_Fase1_Warmup", "weights", "last.pt")
 
-    model.train(
-        task      = "segment",
-        data      = args.data,
-        epochs    = epochs_B,
-        imgsz     = imgsz,
-        batch     = batch,
-        lr0       = lr_B,
-        lrf       = 0.1,
-        weight_decay = 0.0005,
-        warmup_epochs = 1,
-        optimizer = "AdamW",
-        amp       = True,
-        device    = device,
-        project   = project,
-        name      = "FaseB_P5",
-        seed      = 42,
-        verbose   = True,
-        save      = True,
-        exist_ok  = True,
-    )
+        # ── FASE 2: Fine-Tuning de Stages 2+3 (Stages 0+1 SSL congelados) ───
+        logger.info("\n" + "─"*50)
+        logger.info("⚡ FASE 2/2 — Fine-Tuning Adaptativo (Stages 2+3 liberados)")
+        logger.info("─"*50)
 
-    fase_b_weights = os.path.join(project, "FaseB_P5", "weights", "last.pt")
-    logger.info(f" Fase B completada → {fase_b_weights}")
+        register_backbone(None, phase=4, use_coord_attn=True)
+        model = YOLO(fase1_weights, task="segment")
+        lr_ft = apply_phase(model, phase=4, lr=base_lr)
 
-    # ── FASE C: Descongelar P4 (Stage 2) ─────────────────────────────────
-    logger.info("\n" + "─"*50)
-    logger.info(" FASE C — Descongelando Stage 2 (P4, features medias).")
-    logger.info("─"*50)
+        results = model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_ft,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_ft,
+            lrf           = 0.05,
+            weight_decay  = 0.0005,
+            warmup_epochs = 0,
+            close_mosaic  = close_mosaic,
+            mixup         = 0.1,
+            copy_paste    = 0.1,
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "Fast_Fase2_FineTuning",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+        )
 
-    # HIGH-1 FIX: encoder_path=None — pesos vienen del .pt de la fase B.
-    register_backbone(None, phase=3, use_coord_attn=True)
-    model = YOLO(fase_b_weights, task="segment")
-    lr_C  = apply_phase(model, phase=3, lr=base_lr)
+        best_model_path = os.path.join(project, "Fast_Fase2_FineTuning", "weights", "best.pt")
 
-    model.train(
-        task      = "segment",
-        data      = args.data,
-        epochs    = epochs_C,
-        imgsz     = imgsz,
-        batch     = batch,
-        lr0       = lr_C,
-        lrf       = 0.1,
-        weight_decay = 0.0005,
-        warmup_epochs = 1,
-        optimizer = "AdamW",
-        amp       = True,
-        device    = device,
-        project   = project,
-        name      = "FaseC_P4P5",
-        seed      = 42,
-        verbose   = True,
-        save      = True,
-        exist_ok  = True,
-    )
+    else:
+        # ── MODO ESTÁNDAR (4 Fases) ──────────────────────────────────────────
+        epochs_A = min(10, args.epochs // 4)
+        epochs_B = min(15, args.epochs // 4)
+        epochs_C = min(15, args.epochs // 4)
+        epochs_D = max(1, args.epochs - epochs_A - epochs_B - epochs_C)
 
-    fase_c_weights = os.path.join(project, "FaseC_P4P5", "weights", "last.pt")
-    logger.info(f" Fase C completada → {fase_c_weights}")
+        logger.info(f"📋 Distribución de fases: A={epochs_A} | B={epochs_B} | C={epochs_C} | D={epochs_D}")
 
-    # ── FASE D: Full Fine-Tuning ──────────────────────────────────────────
-    logger.info("\n" + "─"*50)
-    logger.info(" FASE D — Full Fine-Tuning. Todo el modelo entrena.")
-    logger.info("─"*50)
+        # ── FASE A: Solo adaptadores ──────────────────────────────────────────
+        logger.info("\n" + "─"*50)
+        logger.info(" FASE A — Backbone congelado. Solo SpatialFeatureAdapters.")
+        logger.info("─"*50)
 
-    # HIGH-1 FIX: encoder_path=None — pesos vienen del .pt de la fase C.
-    register_backbone(None, phase=4, use_coord_attn=True)
-    model = YOLO(fase_c_weights, task="segment")
-    lr_D  = apply_phase(model, phase=4, lr=base_lr * 0.3)
+        register_backbone(args.encoder, phase=1, use_coord_attn=True)
+        model = YOLO(model_yaml, task="segment")
 
-    results = model.train(
-        task      = "segment",
-        data      = args.data,
-        epochs    = epochs_D,
-        imgsz     = imgsz,
-        batch     = batch,
-        lr0       = lr_D,
-        lrf       = 0.05,
-        weight_decay = 0.0005,
-        warmup_epochs = 0,
-        optimizer = "AdamW",
-        amp       = True,
-        device    = device,
-        project   = project,
-        name      = "FaseD_FullFT",
-        seed      = 42,
-        verbose   = True,
-        save      = True,
-        exist_ok  = True,
-    )
+        lr_A  = apply_phase(model, phase=1, lr=base_lr)
 
-    fase_d_best = os.path.join(project, "FaseD_FullFT", "weights", "best.pt")
+        model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_A,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_A,
+            lrf           = 0.1,
+            weight_decay  = 0.0005,
+            warmup_epochs = 2,
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "FaseA_Adapters",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+        )
+
+        fase_a_weights = os.path.join(project, "FaseA_Adapters", "weights", "last.pt")
+
+        # ── FASE B: Descongelar P5 ───────────────────────────────────────────
+        logger.info("\n" + "─"*50)
+        logger.info("🔓 FASE B — Descongelando Stage 3 (P5, semántica global).")
+        logger.info("─"*50)
+
+        register_backbone(None, phase=2, use_coord_attn=True)
+        model = YOLO(fase_a_weights, task="segment")
+        lr_B  = apply_phase(model, phase=2, lr=base_lr)
+
+        model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_B,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_B,
+            lrf           = 0.1,
+            weight_decay  = 0.0005,
+            warmup_epochs = 1,
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "FaseB_P5",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+        )
+
+        fase_b_weights = os.path.join(project, "FaseB_P5", "weights", "last.pt")
+
+        # ── FASE C: Descongelar P4 ───────────────────────────────────────────
+        logger.info("\n" + "─"*50)
+        logger.info(" FASE C — Descongelando Stage 2 (P4, features medias).")
+        logger.info("─"*50)
+
+        register_backbone(None, phase=3, use_coord_attn=True)
+        model = YOLO(fase_b_weights, task="segment")
+        lr_C  = apply_phase(model, phase=3, lr=base_lr)
+
+        model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_C,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_C,
+            lrf           = 0.1,
+            weight_decay  = 0.0005,
+            warmup_epochs = 1,
+            mixup         = 0.1,
+            copy_paste    = 0.1,
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "FaseC_P4P5",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+        )
+
+        fase_c_weights = os.path.join(project, "FaseC_P4P5", "weights", "last.pt")
+
+        # ── FASE D: Full Fine-Tuning ──────────────────────────────────────────
+        logger.info("\n" + "─"*50)
+        logger.info(" FASE D — Full Fine-Tuning.")
+        logger.info("─"*50)
+
+        register_backbone(None, phase=4, use_coord_attn=True)
+        model = YOLO(fase_c_weights, task="segment")
+        lr_D  = apply_phase(model, phase=4, lr=base_lr * 0.3)
+
+        results = model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_D,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_D,
+            lrf           = 0.05,
+            weight_decay  = 0.0005,
+            warmup_epochs = 0,
+            close_mosaic  = close_mosaic,
+            mixup         = 0.1,
+            copy_paste    = 0.1,
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "FaseD_FullFT",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+        )
+
+        best_model_path = os.path.join(project, "FaseD_FullFT", "weights", "best.pt")
 
     # ── Resumen final ─────────────────────────────────────────────────────
     logger.info("\n" + "=" * 60)
     logger.info(" ENTRENAMIENTO COMPLETO DE SEGMENTACIÓN")
-    logger.info(f"   Mejor modelo → {fase_d_best}")
+    logger.info(f"   Mejor modelo → {best_model_path}")
     if hasattr(results, 'results_dict'):
         m = results.results_dict
-        # En segmentación, se reportan también las métricas de máscaras (M)
         logger.info(f"   Box mAP50  : {m.get('metrics/mAP50(B)', 'N/A'):.4f}")
         logger.info(f"   Mask mAP50 : {m.get('metrics/mAP50(M)', 'N/A'):.4f}")
     logger.info("=" * 60)
 
-    return fase_d_best
+    return best_model_path
 
 
 # ---------------------------------------------------------------------------
@@ -288,20 +383,28 @@ def train(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Entrenamiento AranduYOLO Segmentación con currículum SSL de 4 fases."
+        description="Entrenamiento AranduYOLO Segmentación con currículum SSL."
     )
-    parser.add_argument("--data",    required=True,  help="Ruta al data.yaml del dataset YOLO (formato segmentación).")
-    parser.add_argument("--encoder", required=True,  help="Ruta al encoder SSL exportado (.pth).")
-    parser.add_argument("--epochs",  type=int, default=100, help="Épocas totales (default: 100).")
-    parser.add_argument("--batch",   type=int, default=16,  help="Batch size (default: 16).")
-    parser.add_argument("--imgsz",   type=int, default=640, help="Tamaño de imagen (default: 640).")
-    parser.add_argument("--lr",      type=float, default=0.001, help="LR base (default: 0.001).")
-    parser.add_argument("--device",  type=str, default="0",  help="GPU(s): '0', '0,1', 'cpu'.")
-    parser.add_argument("--project", type=str, default="AranduYOLO_Seg_runs", help="Directorio de salida.")
+    parser.add_argument("--data",         required=True,  help="Ruta al data.yaml del dataset YOLO (segmentación).")
+    parser.add_argument("--encoder",      required=True,  help="Ruta al encoder SSL exportado (.pth).")
+    parser.add_argument("--epochs",       type=int, default=100, help="Épocas totales (default: 100).")
+    parser.add_argument("--batch",        type=int, default=16,  help="Batch size (default: 16).")
+    parser.add_argument("--imgsz",        type=int, default=640, help="Tamaño de imagen (default: 640).")
+    parser.add_argument("--lr",           type=float, default=0.001, help="LR base (default: 0.001).")
+    parser.add_argument("--device",       type=str, default="0",  help="GPU(s): '0', '0,1', 'cpu'.")
+    parser.add_argument("--project",      type=str, default="AranduYOLO_Seg_runs", help="Directorio de salida.")
+    parser.add_argument("--fast",         action="store_true", help="Modo 2 fases ultrarrápido con caché en RAM.")
+    parser.add_argument("--slim",         action="store_true", help="Usar arquitectura Slim-YOLO con 50%% menos canales en el neck (arandu_yolo26_slim_seg.yaml).")
+    parser.add_argument("--cfg",          type=str, default="", help="Ruta personalizada a especificación YAML del modelo.")
+    parser.add_argument("--cache",        type=str, default="ram", choices=["ram", "disk", "none", "false"], help="Caché de imágenes (default: ram).")
+    parser.add_argument("--workers",      type=int, default=8,   help="DataLoader worker threads (default: 8).")
+    parser.add_argument("--close_mosaic", type=int, default=10,  help="Desactivar mosaic en últimas N épocas (default: 10).")
     return parser.parse_args()
+
 
 
 if __name__ == "__main__":
     args = parse_args()
     best_model = train(args)
     print(f"\n Mejor modelo guardado en: {best_model}")
+

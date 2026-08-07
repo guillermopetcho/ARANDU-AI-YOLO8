@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anylabeling"
+dynamic = ["version"]
+description = "Effortless data labeling with AI support"
+readme = "README.md"
+license = { text = "GPLv3" }
+authors = [{ name = "Viet-Anh Nguyen", email = "vietanh.dev@gmail.com" }]
+keywords = ["Image Annotation", "Machine Learning", "Deep Learning"]
+requires-python = ">=3.11"
+classifiers = [
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "imgviz>=2.0.0",
+    "natsort>=8.4.0",
+    "numpy>=2.0.0",
+    "Pillow>=11.0.0",
+    "PyYAML>=6.0.2",
+    "termcolor>=2.4.0",
+    "opencv-python-headless>=4.10.0",
+    "PyQt6>=6.7.0; platform_system != 'Darwin'",
+    "onnx>=1.18.0",
+    "onnxruntime>=1.20.0",
+    "qimage2ndarray>=1.10.0",
+    "darkdetect>=0.8.0",
+    "huggingface_hub>=0.24.0",
+    "osam>=0.4.0",  # CLIP tokenizer for SAM3 language encoder
+]
+
+[project.optional-dependencies]
+# Windows/Linux GPU — replaces onnxruntime with GPU variant
+gpu = [
+    "onnxruntime-gpu>=1.20.0",
+]
+# macOS extras (CoreML support)
+macos = [
+    "coremltools==8.3.0",
+]
+# Developer tooling
+dev = [
+    "build>=1.2",
+    "twine>=6.0",
+    # pyside6-rcc is the supported way to rebuild anylabeling/resources/resources.py
+    # — PyQt6 dropped its own pyrcc in the Qt6 line. Used by scripts/*_languages.py.
+    "PySide6-Essentials>=6.7.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/vietanhdev/anylabeling"
+
+[project.scripts]
+anylabeling = "anylabeling.app:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "anylabeling.app_info.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# E = pycodestyle errors, W = pycodestyle warnings
+# F = pyflakes (unused imports, undefined names, etc.)
+# I = isort (import ordering)
+# UP = pyupgrade (modern Python idioms)
+select = ["E", "W", "F", "I", "UP"]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "E741",   # ambiguous variable name (l, O, I) — common in ML code
+    "UP006",  # use `list` instead of `List` (too noisy for now)
+    "UP007",  # use `X | Y` instead of `Optional[X]` (too noisy for now)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files may use star imports and assert statements freely
+"tests/*" = ["F401", "F811"]

@@ -1,0 +1,2 @@
+# CPU (default) install — all deps come from pyproject.toml
+-e .

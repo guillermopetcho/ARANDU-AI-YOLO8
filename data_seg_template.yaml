@@ -1,0 +1,19 @@
+# =========================================================
+# Plantilla data_seg.yaml para ARANDU-YOLO Segmentación
+# =========================================================
+#
+# Configurar las rutas absolutas del dataset en Kaggle/Local:
+path: /kaggle/input/mi-dataset-segementado-soja  # Directorio raíz del dataset
+train: images/train                              # Relativo a 'path' o ruta absoluta
+val: images/val                                  # Relativo a 'path' o ruta absoluta
+test: images/test                                # Opcional
+
+# ---------------------------------------------------------
+# Clases de enfermedades foliares en soja (5 clases)
+# ---------------------------------------------------------
+names:
+  0: healthy
+  1: mosaic
+  2: frog_eye
+  3: bacterial_blight
+  4: potassium_deficiency

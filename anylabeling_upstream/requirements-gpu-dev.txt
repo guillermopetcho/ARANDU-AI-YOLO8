@@ -1,0 +1,2 @@
+# GPU + developer tooling
+-e ".[gpu,dev]"

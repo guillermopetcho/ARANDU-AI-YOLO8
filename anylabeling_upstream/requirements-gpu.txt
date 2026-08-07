@@ -1,0 +1,2 @@
+# GPU install (Windows/Linux) — installs base deps + onnxruntime-gpu
+-e ".[gpu]"

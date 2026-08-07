@@ -1,0 +1,2 @@
+# macOS install — base deps + coremltools
+-e ".[macos]"

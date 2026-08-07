@@ -80,23 +80,37 @@ def get_global_transforms(global_size=640, aug_cfg=None):
     blur_p          = aug.get('global_blur_p', 0.40)
     rotation_p      = aug.get('global_rotation_p', 0.30)
 
-    def _make_global_pipeline():
+    def _make_global_pipeline_q():
+        """Vista query: augmentaciones estándar sin Solarize."""
         return T.Compose([
-            T.RandomResizedCrop(global_size, scale=(0.3, 1.0)),
+            T.RandomResizedCrop(global_size, scale=(0.5, 1.0)),
             T.RandomHorizontalFlip(),
             T.RandomVerticalFlip(p=0.5),
-            # Rotación libre: texturas y hojas son isótropas (no hay 'arriba' canónico)
             T.RandomApply([T.RandomRotation(degrees=15)], p=rotation_p),
-            # hue muy bajo para no corromper la firma cromática diagnóstica
             T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=hue),
-            # grayscale mínimo: mosaic y potassium_deficiency son enfermedades de color
             T.RandomGrayscale(p=grayscale_p),
-            # kernel proporcional a la resolución global (≈ global_size / 35, impar)
             T.RandomApply([T.GaussianBlur(kernel_size=11, sigma=(0.3, 1.5))], p=blur_p),
             T.ToTensor(),
+            T.RandomErasing(p=0.1, scale=(0.02, 0.1), ratio=(0.3, 3.3)),
             T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-    return _make_global_pipeline(), _make_global_pipeline()
+
+    def _make_global_pipeline_k():
+        """Vista key: augmentación asimétrica con Solarize (DINO/MoCo v3 pattern)."""
+        return T.Compose([
+            T.RandomResizedCrop(global_size, scale=(0.5, 1.0)),
+            T.RandomHorizontalFlip(),
+            T.RandomVerticalFlip(p=0.5),
+            T.RandomApply([T.RandomRotation(degrees=15)], p=rotation_p),
+            T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=hue),
+            T.RandomGrayscale(p=grayscale_p),
+            T.RandomApply([T.GaussianBlur(kernel_size=11, sigma=(0.3, 1.5))], p=blur_p),
+            T.RandomSolarize(threshold=128, p=0.2),
+            T.ToTensor(),
+            T.RandomErasing(p=0.1, scale=(0.02, 0.1), ratio=(0.3, 3.3)),
+            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+    return _make_global_pipeline_q(), _make_global_pipeline_k()
 
 
 def get_local_transforms(local_size=128, ultra_size=96, aug_cfg=None):
@@ -252,9 +266,14 @@ def build_index(root, rank, cache_path):
 
 class ModelBase(nn.Module):
     """
-    Backbone ConvNeXt V2 Tiny + Projector MLP + Predictor MLP (MoCo v3).
+    Backbone ConvNeXt V2 Tiny + Projector MLP (3 capas) + Predictor MLP (MoCo v3).
+    
+    Mejoras aplicadas:
+    - Projector 3 capas con BatchNorm1d (DINO v2 / VICReg pattern)
+    - Dimensión de salida 256 (mayor compresión → encoder aprende representaciones más ricas)
+    - Grad checkpointing en encoder
     """
-    def __init__(self, dim=512, predictor_hidden_dim=1024):
+    def __init__(self, dim=256, predictor_hidden_dim=1024):
         super().__init__()
         
         # Encoder: ConvNeXt V2 Tiny (num_classes=0 remueve el clasificador y aplica Global Average Pooling)
@@ -266,41 +285,46 @@ class ModelBase(nn.Module):
         )
         self.encoder.set_grad_checkpointing(enable=True)
         
-        # Projector: 768 -> 2048 -> 512
+        # Projector 3 capas: 768 -> 4096 -> 4096 -> 256 (DINO v2 / VICReg pattern)
+        # Un projector más profundo y ancho extrae más "información descartable",
+        # forzando al encoder a aprender representaciones de mayor calidad.
+        # BatchNorm1d en lugar de LayerNorm para mejor training stability en SSL.
         self.projector = nn.Sequential(
-            nn.Linear(768, 2048),
-            nn.LayerNorm(2048),
+            nn.Linear(768, 4096),
+            nn.BatchNorm1d(4096),
             nn.ReLU(inplace=True),
-            nn.Linear(2048, dim),
-            nn.LayerNorm(dim, elementwise_affine=False)
+            nn.Linear(4096, 4096),
+            nn.BatchNorm1d(4096),
+            nn.ReLU(inplace=True),
+            nn.Linear(4096, dim),
         )
         
-        # Predictor MLP (MoCo v3 asimétrico): 512 -> 1024 -> 512
+        # Predictor MLP (MoCo v3 asimétrico): 256 -> 1024 -> 256
         self.predictor = nn.Sequential(
             nn.Linear(dim, predictor_hidden_dim),
-            nn.LayerNorm(predictor_hidden_dim),
+            nn.BatchNorm1d(predictor_hidden_dim),
             nn.ReLU(inplace=True),
             nn.Linear(predictor_hidden_dim, dim)
         )
 
+    def forward_backbone(self, x):
+        """Extrae directamente las representaciones del backbone encoder (768-dim)."""
+        return self.encoder(x)
+
     def forward(self, x, use_predictor=False, return_norm=False):
         h = self.encoder(x)  # Shape: [B, 768]
-        z = self.projector(h) # Shape: [B, 512]
+        z_raw = self.projector(h) # Shape: [B, dim]
         
-        # HIGH-4 FIX: z_norm (pre-normalización) es la señal diagnóstica correcta para
-        # detectar colapso del projector (z_norm → 0). Se usa SIEMPRE como norma reportada,
-        # incluso cuando use_predictor=True, porque p_norm (norma del predictor) es engañosa:
-        # el predictor recibe z ya L2-normalizado, así que su norma de salida solo refleja
-        # la escala de los pesos del predictor, no la salud del espacio latente.
-        z_norm = z.norm(dim=1).mean()
-        z = F.normalize(z.float(), dim=1, eps=1e-6).to(z.dtype)
+        # z_norm (pre-normalización) es la señal diagnóstica para detectar colapso del projector (z_norm → 0).
+        z_norm = z_raw.norm(dim=1).mean()
         
         if use_predictor:
-            p = self.predictor(z) # Shape: [B, 512]
+            p = self.predictor(z_raw) # Predictor recibe representaciones crudas sin normalizar
             p = F.normalize(p.float(), dim=1, eps=1e-6).to(p.dtype)
-            if return_norm: return p, z_norm  # HIGH-4 FIX: z_norm, no p_norm
+            if return_norm: return p, z_norm
             return p
         
+        z = F.normalize(z_raw.float(), dim=1, eps=1e-6).to(z_raw.dtype)
         if return_norm: return z, z_norm
         return z
 

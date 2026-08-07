@@ -1,0 +1,2 @@
+# CPU + developer tooling
+-e ".[dev]"

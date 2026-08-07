@@ -176,14 +176,19 @@ class MoCoTrainer:
                             # => q_local[i] y k1_exp[i] siempre apuntan al mismo img_idx. ✓
                             # NO modificar este repeat sin actualizar el invariante.
                             k1_exp = k1.repeat(N_crops, 1)
+                            k2_exp = k2.repeat(N_crops, 1)
                             labels_local = labels.repeat(N_crops)
                             
-                            l_pos_l = torch.einsum('nc,nc->n', [q_local, k1_exp]).unsqueeze(-1)
-                            l_neg_l = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
-                            logits_l = (torch.cat([l_pos_l, l_neg_l], dim=1) / temp).clamp(-15, 15)
-                            
-                            # Acumular el loss multiplicando por N_crops para mantener escala
-                            loss_local += F.cross_entropy(logits_l, labels_local) * N_crops
+                            l_pos_l1 = torch.einsum('nc,nc->n', [q_local, k1_exp]).unsqueeze(-1)
+                            l_neg_l1 = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
+                            logits_l1 = (torch.cat([l_pos_l1, l_neg_l1], dim=1) / temp).clamp(-15, 15)
+
+                            l_pos_l2 = torch.einsum('nc,nc->n', [q_local, k2_exp]).unsqueeze(-1)
+                            l_neg_l2 = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
+                            logits_l2 = (torch.cat([l_pos_l2, l_neg_l2], dim=1) / temp).clamp(-15, 15)
+
+                            loss_local_step = (F.cross_entropy(logits_l1, labels_local) + F.cross_entropy(logits_l2, labels_local)) * 0.5
+                            loss_local += loss_local_step * N_crops
                             
                         loss_local = loss_local / len(local_crops)
 
@@ -237,6 +242,10 @@ class MoCoTrainer:
                 grad_clip_val = self.config['training'].get('grad_clip', 0.5)
                 torch.nn.utils.clip_grad_norm_(self.model_q.parameters(), grad_clip_val)
 
+                # Momentum update antes de actualizar los pesos de model_q
+                with torch.no_grad():
+                    momentum_update(self.model_q, self.model_k, momentum)
+
                 if self.config['training']['use_amp']:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
@@ -245,14 +254,11 @@ class MoCoTrainer:
 
                 self.scheduler.step()
 
-
-                
                 self.optimizer.zero_grad(set_to_none=True)
                 global_step += 1
                 valid_in_window = 0  # R-5 FIX: reset para la siguiente ventana de acumulación
 
                 with torch.no_grad():
-                    momentum_update(self.model_q, self.model_k, momentum)
                     # BUG-ENQUEUE FIX: El enqueue de la queue DEBE estar dentro del
                     # bloque de optimización (if not is_accumulating). Antes estaba
                     # un nivel arriba, por lo que en pasos de acumulación se encolaba

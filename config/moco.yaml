@@ -19,7 +19,7 @@ training:
   use_compile: false
 
 moco:
-  dim: 512
+  dim: 256
   queue: 32768         # Cola doblada para 2xT4: mejora manifold y uniformidad
   momentum_start: 0.996
   momentum_end: 0.999

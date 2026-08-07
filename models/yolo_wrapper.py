@@ -334,18 +334,24 @@ class AranduBackbone(nn.Module):
                 for p in self.backbone.stages[2].parameters(): p.requires_grad = True
 
         if phase >= 4:
-            # En lugar de descongelar TODO, preservamos las etapas de alta frecuencia
-            # (Stage 0 y Stage 1) que contienen las features texturales MoCo de 89% ACC.
-            # Solo aseguramos que el stem, si existe, u otras capas externas estén libres.
-            if hasattr(self.backbone, 'stem'):
-                for p in self.backbone.stem.parameters(): p.requires_grad = True
-            # Stages 0 y 1 permanecen CONGELADOS intencionalmente para evitar Catastrophic Forgetting
+            # Full Fine-Tuning: descongelar TODO el backbone incluyendo Stages 0+1.
+            # En lugar de mantenerlos congelados (catastrophic forgetting guard),
+            # usamos LR diferencial: el optimizer asigna 1/10 del LR base a Stages 0+1.
+            # Esto permite adaptación completa al dominio sin destruir los priors SSL.
+            for p in self.backbone.parameters():
+                p.requires_grad = True
+            # Marcar parámetros de Stages 0+1 para LR diferencial.
+            # train_yolo_seg.py usa este flag para crear param_groups con LR reducido.
+            if hasattr(self.backbone, 'stages'):
+                for stage_idx in (0, 1):
+                    for p in self.backbone.stages[stage_idx].parameters():
+                        p._arandu_low_lr = True  # Flag para LR diferencial (1/10)
 
         phase_desc = {
             1: "A — Solo Adaptadores (backbone 100% congelado)",
             2: "B — + Stage3/P5 liberado",
             3: "C — + Stage2/P4 liberado",
-            4: "D — Full Fine-Tuning (Stages 2/3 liberados. Stages 0/1 CONGELADOS)",
+            4: "D — Full Fine-Tuning (Todo liberado, Stages 0/1 con LR 1/10)",
         }
         self.logger.info(f"[AranduBackbone] Fase {phase_desc[phase]}")
 

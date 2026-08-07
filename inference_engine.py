@@ -110,9 +110,14 @@ class AranduInferenceEngine:
 
         print("[*] Cargando Head Lineal...")
         with torch.no_grad():
-            # C-1 FIX: Usar self.eval_size (leído desde config) en lugar de 320 hardcodeado.
             dummy = torch.randn(1, 3, self.eval_size, self.eval_size).to(self.device)
-            proj_dim = self.encoder(dummy, use_predictor=False).shape[-1]
+            raw_enc = self.encoder.module if hasattr(self.encoder, 'module') else self.encoder
+            raw_enc = raw_enc._orig_mod if hasattr(raw_enc, '_orig_mod') else raw_enc
+            if hasattr(raw_enc, 'forward_backbone'):
+                sample_feat = raw_enc.forward_backbone(dummy)
+            else:
+                sample_feat = self.encoder(dummy, use_predictor=False)
+            proj_dim = sample_feat.shape[-1]
             
         self.head = nn.Sequential(
             nn.LayerNorm(proj_dim),
@@ -194,11 +199,12 @@ class AranduInferenceEngine:
         x = self.transform(img).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            # 1. Extraer Feature
-            # MED-1 FIX: ModelBase.forward(use_predictor=False) ya L2-normaliza internamente
-            # (moco.py:296). No se necesita F.normalize() adicional — era la segunda
-            # normalización, y faiss.normalize_L2() sería la tercera.
-            z = self.encoder(x, use_predictor=False)  # Ya es unit-norm
+            raw_enc = self.encoder.module if hasattr(self.encoder, 'module') else self.encoder
+            raw_enc = raw_enc._orig_mod if hasattr(raw_enc, '_orig_mod') else raw_enc
+            if hasattr(raw_enc, 'forward_backbone'):
+                z = F.normalize(raw_enc.forward_backbone(x), dim=1)
+            else:
+                z = self.encoder(x, use_predictor=False)
             
             # 2. Linear Head
             logits = self.head(z)

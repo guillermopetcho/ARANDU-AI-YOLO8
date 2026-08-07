@@ -1,0 +1,51 @@
+# =========================================================
+# ARANDU + YOLO SLIM SEGMENTATION (Backbone SSL ConvNeXt V2 Tiny)
+# =========================================================
+# Arquitectura ultra-ligera optimizada para encoders SSL preentrenados.
+# Reduce los canales del Neck en un 50% y las repeticiones C2f (n=1),
+# aprovechando la riqueza del espacio latente MoCo v3 para lograr hasta 3x más FPS.
+#
+# nc es sobrescrito automáticamente por data.yaml durante model.train()
+nc: 5
+
+# =========================================================
+# BACKBONE
+# =========================================================
+backbone:
+  - [-1, 1, AranduYOLOWrapper, []]
+
+# =========================================================
+# SLIM NECK (PAN-FPN — 50% Canales, C2f n=1)
+# =========================================================
+neck:
+  # --- FPN Top-Down ---
+  - [4, 1, nn.Upsample, [None, 2, "nearest"]]    # 5:  Upsample P5
+  - [[5, 3], 1, Concat, [1]]                      # 6:  Concat(UP_P5, P4)
+  - [6, 1, C2f, [256]]                            # 7:  P4_fpn (reducido a 256ch)
+
+  - [7, 1, nn.Upsample, [None, 2, "nearest"]]    # 8:  Upsample P4_fpn
+  - [[8, 2], 1, Concat, [1]]                      # 9:  Concat(UP_P4, P3)
+  - [9, 1, C2f, [128]]                            # 10: P3_fpn (reducido a 128ch)
+
+  - [10, 1, nn.Upsample, [None, 2, "nearest"]]   # 11: Upsample P3_fpn
+  - [[11, 1], 1, Concat, [1]]                     # 12: Concat(UP_P3, P2)
+  - [12, 1, C2f, [64]]                            # 13: P2_final (reducido a 64ch)
+
+  # --- PAN Bottom-Up ---
+  - [13, 1, Conv, [64, 3, 2]]                    # 14: Downsample P2_final
+  - [[14, 10], 1, Concat, [1]]                    # 15: Concat(↓P2, P3_fpn)
+  - [15, 1, C2f, [128]]                           # 16: P3_final (128ch)
+
+  - [16, 1, Conv, [128, 3, 2]]                   # 17: Downsample P3_final
+  - [[17, 7], 1, Concat, [1]]                     # 18: Concat(↓P3, P4_fpn)
+  - [18, 1, C2f, [256]]                           # 19: P4_final (256ch)
+
+  - [19, 1, Conv, [256, 3, 2]]                   # 20: Downsample P4_final
+  - [[20, 4], 1, Concat, [1]]                     # 21: Concat(↓P4, P5)
+  - [21, 1, C2f, [512]]                           # 22: P5_final (512ch)
+
+# =========================================================
+# HEAD (Segment — 4 escalas P2/P3/P4/P5)
+# =========================================================
+head:
+  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 128]]

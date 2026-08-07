@@ -1,0 +1,45 @@
+# pre-commit run --all-files
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+    -   id: check-added-large-files
+        args: ['--maxkb=8096']
+    -   id: check-case-conflict
+    -   id: check-executables-have-shebangs
+    -   id: check-merge-conflict
+    -   id: check-shebang-scripts-are-executable
+    -   id: check-symlinks
+    -   id: check-yaml
+    -   id: debug-statements
+        exclude: tests/
+    -   id: destroyed-symlinks
+    -   id: end-of-file-fixer
+        exclude: tests/test_changes/
+        files: \.(py|sh|rst|yml|yaml)$
+    -   id: mixed-line-ending
+    -   id: trailing-whitespace
+        files: \.(py|sh|rst|yml|yaml)$
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.2
+    hooks:
+    -   id: ruff
+        args: [ --fix ]
+        exclude: tests/|anylabeling/resources/resources.py
+    -   id: ruff-format
+        exclude: tests/|anylabeling/resources/resources.py
+-   repo: https://github.com/rstcheck/rstcheck
+    rev: v6.1.2
+    hooks:
+    -   id: rstcheck
+        args: [
+            --report-level=warning,
+        ]
+-   repo: https://github.com/codespell-project/codespell
+    rev: v2.2.4
+    hooks:
+    -   id: codespell
+        files: \.(py|sh|rst|yml|yaml)$
+        args:
+        - --ignore-words-list=datas
+        - --skip=scripts/build_macos_folder.sh

@@ -224,23 +224,37 @@ def load_weights_for_rollback(
     model_q, model_k, optimizer, scaler, queue,
     is_compiled: bool, is_distributed: bool,
 ) -> int:
-    """Carga pesos del modelo para un Rollback sin restaurar el controller.
+    """Carga pesos del modelo para un Rollback o transferencia de fase.
 
-    A diferencia de load_checkpoint(), esta función NO toca el controller,
-    el epoch ni el global_step del caller — solo restaura los pesos del modelo,
-    el optimizer, el scaler y la queue desde el best checkpoint.
-
-    Returns:
-        global_step del checkpoint cargado.
+    Soporta tanto checkpoints completos ({'model_q': ...}) como state_dicts
+    planos exportados.
     """
     ckpt = torch.load(path, map_location="cpu", weights_only=True)
-    res_q = model_q.load_state_dict(adapt_keys(ckpt["model_q"], is_compiled, is_distributed), strict=False)
-    if res_q.missing_keys: logger.warning(f"⚠️ Rollback model_q missing keys: {res_q.missing_keys}")
-    if res_q.unexpected_keys: logger.warning(f"⚠️ Rollback model_q unexpected keys: {res_q.unexpected_keys}")
-    res_k = model_k.load_state_dict(adapt_keys(ckpt["model_k"], is_compiled, False), strict=False)
-    if res_k.missing_keys: logger.warning(f"⚠️ Rollback model_k missing keys: {res_k.missing_keys}")
-    if res_k.unexpected_keys: logger.warning(f"⚠️ Rollback model_k unexpected keys: {res_k.unexpected_keys}")
-    optimizer.load_state_dict(ckpt["optimizer"])
-    scaler.load_state_dict(ckpt["scaler"])
-    queue.load_state_dict(ckpt["queue"])
-    return ckpt.get("global_step", 0)
+    if isinstance(ckpt, dict) and "model_q" in ckpt:
+        sd_q = ckpt["model_q"]
+        sd_k = ckpt.get("model_k", sd_q)
+    else:
+        sd_q = ckpt
+        sd_k = ckpt
+
+    res_q = model_q.load_state_dict(adapt_keys(sd_q, is_compiled, is_distributed), strict=False)
+    if res_q.missing_keys: logger.warning(f"⚠️ Transfer/Rollback model_q missing keys: {res_q.missing_keys}")
+    if res_q.unexpected_keys: logger.warning(f"⚠️ Transfer/Rollback model_q unexpected keys: {res_q.unexpected_keys}")
+
+    res_k = model_k.load_state_dict(adapt_keys(sd_k, is_compiled, False), strict=False)
+    if res_k.missing_keys: logger.warning(f"⚠️ Transfer/Rollback model_k missing keys: {res_k.missing_keys}")
+    if res_k.unexpected_keys: logger.warning(f"⚠️ Transfer/Rollback model_k unexpected keys: {res_k.unexpected_keys}")
+
+    if isinstance(ckpt, dict):
+        if "optimizer" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optimizer"])
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo restaurar estado de optimizer ({e}), se mantendrá limpio.")
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
+        if "queue" in ckpt:
+            queue.load_state_dict(ckpt["queue"])
+            
+    return ckpt.get("global_step", 0) if isinstance(ckpt, dict) else 0
+

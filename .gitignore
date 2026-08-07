@@ -32,6 +32,7 @@ train_index.npy
 runs/
 Ablation_SojAI/
 AranduYOLO_runs/
+AranduYOLO_Seg_runs/
 wandb/
 
 # Imágenes de evaluación y métricas

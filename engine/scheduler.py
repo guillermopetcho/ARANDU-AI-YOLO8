@@ -13,7 +13,7 @@ def build_scheduler(opt, w_steps, t_steps, final_lr_ratio=0.0):
     """
     def lr_lambda(step):
         if step < w_steps:
-            return 0.01 + 0.99 * (step / max(1, w_steps))
+            return 0.10 + 0.90 * (step / max(1, w_steps))
         else:
             progress = (step - w_steps) / max(1, t_steps - w_steps)
             decay = 0.5 * (1.0 + math.cos(math.pi * progress))

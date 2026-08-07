@@ -8,12 +8,24 @@ import json
 import logging
 
 
-def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
-    """Entrena una sonda lineal sobre las representaciones del projector.
+def _extract_encoder_feats(encoder, x):
+    """Extrae features del backbone (768-dim) si está disponible, o del projector como fallback."""
+    raw_enc = encoder
+    if hasattr(raw_enc, 'module'):
+        raw_enc = raw_enc.module
+    if hasattr(raw_enc, '_orig_mod'):
+        raw_enc = raw_enc._orig_mod
+    
+    if hasattr(raw_enc, 'forward_backbone'):
+        return raw_enc.forward_backbone(x)
+    return encoder(x, use_predictor=False)
 
-    NOTA DE DISEÑO: Esta función espera un `encoder` de tipo `ModelBase` (o compatible)
-    que acepte `forward(x, use_predictor=False)` y retorne el embedding del projector
-    (512-dim por defecto, configurable via `moco.dim` en el YAML).
+
+def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
+    """Entrena una sonda lineal sobre las representaciones del backbone encoder.
+
+    NOTA DE DISEÑO: Esta función prioriza el uso de `forward_backbone` (768-dim)
+    para evaluar la calidad de las representaciones del encoder antes del projector.
     La dimensión se infiere dinámicamente — no hace falta hardcodear.
     """
 
@@ -25,10 +37,9 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
         p.requires_grad = False
 
     # Extraer una muestra de features para inferir la dimensión de salida automáticamente.
-    # Esto hace la función robusta a cambios de `dim` en moco.yaml sin hardcodear 256.
     with torch.no_grad():
         sample_x, _ = train_ds[0]
-        sample_out = encoder(sample_x.unsqueeze(0).to(device), use_predictor=False)
+        sample_out = _extract_encoder_feats(encoder, sample_x.unsqueeze(0).to(device))
         proj_dim = sample_out.shape[-1]
     logger.info(f"Linear Probe: dim de features = {proj_dim}")
 
@@ -48,21 +59,13 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     optimizer = torch.optim.AdamW(param_groups, lr=1e-3)
     epochs = config.get('eval', {}).get('linear_probe_epochs', 25)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    # B-LBL FIX: label_smoothing reducido de 0.1 a 0.05.
-    # Con solo 5 clases, 0.1 suavizaba demasiado el target (0.9 correcto, 0.025 incorrecto)
-    # y podía reducir la capacidad discriminativa en clases bien separadas por el SSL.
     criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
 
     n_workers = config['training']['num_workers']
-    # Bug #4 FIX: Leer batch_size del config en lugar de hardcodear 256/128 (causa OOM).
     lp_batch = config.get('eval', {}).get('linear_probe_batch_size', 32)
-    # B11 FIX: persistent_workers solo es válido cuando num_workers > 0
     train_loader = DataLoader(train_ds, batch_size=lp_batch, shuffle=True,
                               num_workers=n_workers, pin_memory=True,
                               persistent_workers=(n_workers > 0))
-    # BUG-VALLOADER FIX: persistent_workers evita reinicializar workers en cada
-    # epoch del loop de evaluación. Sin esto, cada epoch del LinearProbe paga
-    # el costo de spawn de n_workers procesos al principio del val loop.
     val_loader = DataLoader(val_ds, batch_size=lp_batch, shuffle=False,
                             num_workers=n_workers, pin_memory=True,
                             persistent_workers=(n_workers > 0))
@@ -75,18 +78,14 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
         classifier.train()
         total_loss = 0.0
         
-        # Añadir tqdm para ver el progreso del batch
         pbar = tqdm(train_loader, desc=f"Linear Probe Ep {epoch+1}/{epochs}", leave=False)
         for x, y in pbar:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             with torch.no_grad():
                 with torch.amp.autocast(device_type, enabled=use_amp):
-                    feats = F.normalize(encoder(x, use_predictor=False), dim=1)
+                    feats = F.normalize(_extract_encoder_feats(encoder, x), dim=1)
             
-            # M-5 FIX: Detach explícito de feats para liberar referencias al autograd
-            # graph del encoder. Sin esto, feats retiene la memoria del graph hasta
-            # el final del scope, generando presión de RAM en datasets grandes.
             feats = feats.detach()
             optimizer.zero_grad()
             with torch.amp.autocast(device_type, enabled=use_amp):
@@ -108,11 +107,8 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     with torch.no_grad():
         for x, y in val_loader:
             x = x.to(device, non_blocking=True)
-            # BUG-AUTOCAST-VAL FIX: sin autocast el encoder y el classifier operan
-            # en float32, pero sus parámetros pueden estar en bf16/fp16 bajo AMP.
-            # Esto causa dtype mismatch silencioso → resultados de val incorrectos.
             with torch.amp.autocast(device_type, enabled=use_amp):
-                feats = F.normalize(encoder(x, use_predictor=False), dim=1)
+                feats = F.normalize(_extract_encoder_feats(encoder, x), dim=1)
                 preds = torch.argmax(classifier(feats), dim=1)
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(y.numpy())

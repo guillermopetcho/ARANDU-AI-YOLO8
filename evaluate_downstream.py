@@ -105,8 +105,14 @@ def evaluate():
     # BUG-12 FIX: dummy con eval_size real — no 320 hardcodeado.
     with torch.no_grad():
         dummy   = torch.randn(1, 3, eval_size, eval_size).to(device)
-        proj_dim = encoder(dummy, use_predictor=False).shape[-1]
-    print(f"[*] Dimensión del projector inferida: {proj_dim}")
+        raw_enc = encoder.module if hasattr(encoder, 'module') else encoder
+        raw_enc = raw_enc._orig_mod if hasattr(raw_enc, '_orig_mod') else raw_enc
+        if hasattr(raw_enc, 'forward_backbone'):
+            sample_feat = raw_enc.forward_backbone(dummy)
+        else:
+            sample_feat = encoder(dummy, use_predictor=False)
+        proj_dim = sample_feat.shape[-1]
+    print(f"[*] Dimensión de características inferida: {proj_dim}")
     
     classifier = nn.Sequential(
         nn.LayerNorm(proj_dim),
@@ -125,13 +131,11 @@ def evaluate():
     with torch.no_grad():
         for x, y in val_loader:
             x = x.to(device, non_blocking=True)
-            # BUG-10 FIX: autocast obligatorio cuando use_amp=True.
-            # Sin él, encoder y classifier operan en float32 pero sus pesos
-            # pueden estar en BF16 (guardados por AMP durante el training).
-            # Esto causa dtype mismatch silencioso → resultados de inferencia
-            # incorrectos que no generan error pero sí predicciones erróneas.
             with torch.amp.autocast(device_type, enabled=use_amp):
-                feats = F.normalize(encoder(x, use_predictor=False), dim=1)
+                if hasattr(raw_enc, 'forward_backbone'):
+                    feats = F.normalize(raw_enc.forward_backbone(x), dim=1)
+                else:
+                    feats = F.normalize(encoder(x, use_predictor=False), dim=1)
                 logits = classifier(feats)
                 probs  = F.softmax(logits, dim=1)
                 preds  = torch.argmax(logits, dim=1)
