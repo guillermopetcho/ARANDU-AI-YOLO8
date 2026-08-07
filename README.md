@@ -230,9 +230,6 @@ Curriculum de 4 fases:
 | [ablation_runner.py](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/ablation_runner.py) | Auditoría de Semantic Occupancy Ratio (SOR) y Capture Entropy por clase y tamaño de crop. Usa K-Means K=3 para prototipos de clase. |
 | [inference_engine.py](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/inference_engine.py) | Pipeline de inferencia completo: Linear Head + KNN + lógica de fusión experta (🟢/🟡/🔴). |
 | [unsupervised_segmenter.py](file:///home/ama-gi/Documentos/IAR/SojAI/code/ENCODER_YOLO/unsupervised_segmenter.py) | **Nuevo**: Segmentación no supervisada por reward (clustering de features MoCo). |
-| `FPS-Ocean-Filter.py` | Pipeline de curación de dataset con Farthest Point Sampling sobre embeddings. |
-| `Active-Ocean-Generator.py` | Generador activo de oceans sintéticos guiado por vecindarios latentes. |
-| `Semantic-Ocean-Filter.py` | Filtrado semántico de oceans basado en similitud con prototipos. |
 
 ### 3.7 Configuración
 

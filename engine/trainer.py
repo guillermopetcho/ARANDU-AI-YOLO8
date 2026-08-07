@@ -208,8 +208,8 @@ class MoCoTrainer:
                                 # q_local: [B*N_crops, D] → [N_crops, B, D] → mean → [B, D]
                                 q_local_grouped = q_local.detach().view(N_crops, B, -1)
                                 q_local_mean = F.normalize(q_local_grouped.mean(dim=0), dim=1)
-                                q1_norm = F.normalize(q1.detach(), dim=1)
-                                agreement = F.cosine_similarity(q1_norm, q_local_mean, dim=1).mean().item()
+                                q1_normalized = F.normalize(q1.detach(), dim=1)
+                                agreement = F.cosine_similarity(q1_normalized, q_local_mean, dim=1).mean().item()
                                 texture_agreement_sum += agreement
                                 texture_agreement_count += 1
 
