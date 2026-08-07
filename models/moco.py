@@ -297,6 +297,11 @@ class ModelBase(nn.Module):
             nn.BatchNorm1d(4096),
             nn.ReLU(inplace=True),
             nn.Linear(4096, dim),
+            # C-4 FIX: Whitening sin parámetros learnable (affine=False).
+            # Centra y normaliza la salida del projector, estabilizando la distribución
+            # de entrada a la normalización L2. Con affine=True, el BN podría aprender
+            # un rescaling que anula la normalización.
+            nn.BatchNorm1d(dim, affine=False),
         )
         
         # Predictor MLP (MoCo v3 asimétrico): 256 -> 1024 -> 256
@@ -311,7 +316,7 @@ class ModelBase(nn.Module):
         """Extrae directamente las representaciones del backbone encoder (768-dim)."""
         return self.encoder(x)
 
-    def forward(self, x, use_predictor=False, return_norm=False):
+    def forward(self, x, use_predictor=False, return_norm=False, return_z_raw=False):
         h = self.encoder(x)  # Shape: [B, 768]
         z_raw = self.projector(h) # Shape: [B, dim]
         
@@ -321,10 +326,16 @@ class ModelBase(nn.Module):
         if use_predictor:
             p = self.predictor(z_raw) # Predictor recibe representaciones crudas sin normalizar
             p = F.normalize(p.float(), dim=1, eps=1e-6).to(p.dtype)
+            if return_z_raw:
+                if return_norm: return p, z_norm, z_raw
+                return p, z_raw
             if return_norm: return p, z_norm
             return p
         
         z = F.normalize(z_raw.float(), dim=1, eps=1e-6).to(z_raw.dtype)
+        if return_z_raw:
+            if return_norm: return z, z_norm, z_raw
+            return z, z_raw
         if return_norm: return z, z_norm
         return z
 

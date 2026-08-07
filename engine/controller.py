@@ -82,7 +82,26 @@ class TrainingController:
         self.best_acc = 0.0
         self.patience = 0
         self.warmup_aborted = False
-        self.temp_adj = 0.0
+        
+        # E-3 FIX: Parámetros del PID cacheados en __init__ en lugar de
+        # leerlos con self.config.get('controller', {}).get(...) 11 veces
+        # por epoch. El config no cambia mid-training.
+        ctrl_cfg = config.get('controller', {})
+        self.Kp_tau = ctrl_cfg.get('Kp_tau', 0.02)
+        self.Ki_tau_ratio = ctrl_cfg.get('Ki_tau_ratio', 50.0)
+        self.Kp_alpha = ctrl_cfg.get('Kp_alpha', 0.005)
+        self.Kp_lr = ctrl_cfg.get('Kp_lr', 0.5)
+        self.lr_recovery_rate_base = ctrl_cfg.get('lr_recovery_rate', 1.025)
+        self.crisis_threshold = ctrl_cfg.get('crisis_threshold', 2)
+        self.db_u = ctrl_cfg.get('deadband_u', 0.1)
+        self.db_d = ctrl_cfg.get('deadband_d', 0.1)
+        self.db_r = ctrl_cfg.get('deadband_r', 0.05)
+        self.tau_max = ctrl_cfg.get('tau_max', 0.25)
+        self.momentum_max = ctrl_cfg.get('momentum_max', 1.0 - 1e-5)
+        
+        self.ema_beta_U = ctrl_cfg.get('ema_beta_U', 0.7)
+        self.ema_beta_D = ctrl_cfg.get('ema_beta_D', 0.9)
+        self.ema_beta_R = ctrl_cfg.get('ema_beta_R', 0.85)
         
         # Estado PID Geométrico (Control Continuo Acoplado)
         self.tau = config['moco'].get('temp_start', 0.15) if 'moco' in config else 0.15
@@ -188,16 +207,9 @@ class TrainingController:
             baseline = self.ema_ratio_baseline.update(current_ratio)
             ratio_norm = current_ratio / baseline if baseline > 0 else 1.0
             self.history['ratio_norm'].append(ratio_norm)
-            
-            if self.last_ratio_ema is not None:
-                delta_R = current_ratio - self.last_ratio_ema
-                eps = 0.001
-                if delta_R < -eps:
-                    self.temp_adj = min(self.temp_adj + 0.002, 0.03)
-                    self.logger.info(f"📈 AAC: Tendencia ΔR={delta_R:.4f}. Temp +0.002")
-                elif delta_R > eps:
-                    self.temp_adj = max(self.temp_adj - 0.002, -0.03)
-                    self.logger.info(f"📉 AAC: Tendencia ΔR={delta_R:.4f}. Temp -0.002")
+            # E-1 FIX: Se eliminó temp_adj — se calculaba aquí pero nunca se aplicaba a τ.
+            # El PID latente (Eje A) ya implementa control PI sobre τ con integral,
+            # deadband y anti-windup. temp_adj era un vestigio de una versión anterior.
             self.last_ratio_ema = current_ratio
 
         if curr_acc >= 0:
@@ -308,18 +320,16 @@ class TrainingController:
                     corrected_eR = eR_norm + tau_effect
                     
                     # Desacople Temporal (EMAs de Errores)
-                    self.eU_ema = 0.7 * self.eU_ema + 0.3 * eU_norm
-                    self.eD_ema = 0.9 * self.eD_ema + 0.1 * eD_norm
-                    self.eR_ema = 0.85 * self.eR_ema + 0.15 * corrected_eR
+                    self.eU_ema = self.ema_beta_U * self.eU_ema + (1.0 - self.ema_beta_U) * eU_norm
+                    self.eD_ema = self.ema_beta_D * self.eD_ema + (1.0 - self.ema_beta_D) * eD_norm
+                    self.eR_ema = self.ema_beta_R * self.eR_ema + (1.0 - self.ema_beta_R) * corrected_eR
                     
                     # Deadband (Zona Muerta) APLICADA DESPUÉS DEL EMA para evitar sesgos nulos
                     # (función definida a nivel de módulo para testabilidad y eficiencia)
-                    db_u = self.config.get('controller', {}).get('deadband_u', 0.1)
-                    db_d = self.config.get('controller', {}).get('deadband_d', 0.1)
-                    db_r = self.config.get('controller', {}).get('deadband_r', 0.05)
-                    eU_ctrl = deadband(self.eU_ema, db_u)
-                    eD_ctrl = deadband(self.eD_ema, db_d)
-                    eR_ctrl = deadband(self.eR_ema, db_r)
+                    # E-3 FIX: parámetros leídos desde atributos cacheados en __init__
+                    eU_ctrl = deadband(self.eU_ema, self.db_u)
+                    eD_ctrl = deadband(self.eD_ema, self.db_d)
+                    eR_ctrl = deadband(self.eR_ema, self.db_r)
                     
                     # Bandera para suspender el PID termostático si hay crisis
                     use_pid_tau = True
@@ -332,22 +342,19 @@ class TrainingController:
                         self.I_U *= 0.9 # Descarga rápida si cruza el target
                     self.I_U = max(min(self.I_U, 5.0), -5.0) # Clamp
                     
-                    Kp_tau = self.config.get('controller', {}).get('Kp_tau', 0.02)
-                    Ki_tau_ratio = self.config.get('controller', {}).get('Ki_tau_ratio', 50.0)
-                    Ki_tau = Kp_tau / Ki_tau_ratio
+                    # E-3 FIX: Kp_tau, Ki_tau_ratio leídos desde atributos cacheados
+                    Ki_tau = self.Kp_tau / self.Ki_tau_ratio
                     # La actualización se realiza al final, si use_pid_tau es True
                     
                     
                     # --- Eje B: Freno de Inercia (Control P sobre Alpha) ---
-                    Kp_alpha = self.config.get('controller', {}).get('Kp_alpha', 0.005)
-                    momentum_max = self.config.get('controller', {}).get('momentum_max', 1.0 - 1e-5)
-                    alpha_min = 1.0 - momentum_max  # momentum_max=0.9995 => alpha_min=5e-4
-                    self.alpha -= Kp_alpha * eD_ctrl
+                    # E-3 FIX: Kp_alpha, momentum_max leídos desde atributos cacheados
+                    alpha_min = 1.0 - self.momentum_max  # momentum_max=0.9995 => alpha_min=5e-4
+                    self.alpha -= self.Kp_alpha * eD_ctrl
                     self.alpha = max(min(self.alpha, 0.05), alpha_min)  # Momentum [momentum_max, 0.95]
                     self.current_m = 1.0 - self.alpha
                     
                     # --- Eje C: Amortiguador de LR Reversible ---
-                    Kp_lr = self.config.get('controller', {}).get('Kp_lr', 0.5)
                     old_scale = self.lr_scale
                     
                     # Validar externamente si es crisis o refinamiento
@@ -375,17 +382,17 @@ class TrainingController:
                     if delta_rank_abs < 0.05 and drift < 0.15:
                         phase = "Convergencia"
                         adaptive_threshold = base_threshold * 1.2
-                        lr_recovery_rate = self.config.get('controller', {}).get('lr_recovery_rate', 1.025)
+                        lr_recovery_rate = self.lr_recovery_rate_base
                     elif delta_rank_abs > 0.5:
                         phase = "Reorganización"
                         adaptive_threshold = base_threshold * 0.9
-                        lr_recovery_rate = self.config.get('controller', {}).get('lr_recovery_rate', 1.025) * 1.01
+                        lr_recovery_rate = self.lr_recovery_rate_base * 1.01
                     else:
                         phase = "Transición"
                         adaptive_threshold = base_threshold
-                        lr_recovery_rate = self.config.get('controller', {}).get('lr_recovery_rate', 1.025)
+                        lr_recovery_rate = self.lr_recovery_rate_base
                     
-                    crisis_th = self.config.get('controller', {}).get('crisis_threshold', 2)
+                    crisis_th = self.crisis_threshold
                     is_crisis_raw = (delta_rank_abs > adaptive_threshold) and not is_healthy_reorg
                     if is_crisis_raw:
                         self.crisis_counter += 1
@@ -412,29 +419,33 @@ class TrainingController:
                         tau_boost = 0.02 * min(2.0, delta_rank_abs)
                         self.logger.warning(f"🚨 SEGUNDA OLA DE CRISIS DETECTADA. Control estructural (Tau +{tau_boost:.4f}).")
                         self.tau += tau_boost
-                        # Respetar tau_max del config (mini-fase quirúrgica puede ser 0.15)
-                        tau_max = self.config.get('controller', {}).get('tau_max', 0.25)
-                        momentum_max = self.config.get('controller', {}).get('momentum_max', 1.0 - 1e-5)
-                        self.tau = max(min(self.tau, tau_max), 0.05)
+                        # E-3/E-4 FIX: tau_max leído desde atributo cacheado.
+                        # momentum_max eliminado (no se usaba en este bloque).
+                        self.tau = max(min(self.tau, self.tau_max), 0.05)
                         # No asfixiamos más al optimizador, el problema es estructural
                         self.lr_scale = max(self.lr_scale, 0.4)
                         use_pid_tau = False
                     elif self.crisis_counter == 0:
-                        # ENFRIAMIENTO POST-CRISIS: Disipamos el calor residual suavemente
-                        self.tau *= 0.995
-                        # ANCLAJE SUAVE: Evitamos el 'creep térmico' a largo plazo
-                        tau_target = 0.10
-                        self.tau += 0.01 * (tau_target - self.tau)
-                        # DESCONGELAMIENTO DE MOMENTUM: Evitamos saturación crónica (m -> 0.99)
-                        self.alpha = min(self.alpha + 1e-4, 0.01)
+                        # C-3 FIX: El enfriamiento post-crisis solo actúa si el PID está
+                        # dentro de su deadband (eU_ctrl == 0). Antes interfería con el PID
+                        # modificando τ justo antes de que el PID aplicara su propio ajuste.
+                        if eU_ctrl == 0.0:
+                            # ENFRIAMIENTO POST-CRISIS: Disipamos el calor residual suavemente
+                            self.tau *= 0.995
+                            # ANCLAJE SUAVE: Evitamos el 'creep térmico' a largo plazo
+                            tau_target = 0.10
+                            self.tau += 0.01 * (tau_target - self.tau)
+                        # E-2 FIX: Se eliminó el descongelamiento de momentum
+                        # (self.alpha = min(self.alpha + 1e-4, 0.01)).
+                        # Empujaba alpha hacia 0.01 en cada epoch normal, interfiriendo
+                        # con el Eje B del PID que controla alpha basándose en drift.
                         
                     if use_pid_tau:
-                        tau_max = self.config.get('controller', {}).get('tau_max', 0.25)
-                        self.tau += Kp_tau * eU_ctrl + Ki_tau * self.I_U
+                        self.tau += self.Kp_tau * eU_ctrl + Ki_tau * self.I_U
                         # Anti-Windup Dinámico
-                        if self.tau >= tau_max or self.tau <= 0.05:
+                        if self.tau >= self.tau_max or self.tau <= 0.05:
                             self.I_U *= 0.9 # Leak cuando está saturado
-                        self.tau = max(min(self.tau, tau_max), 0.05)
+                        self.tau = max(min(self.tau, self.tau_max), 0.05)
                         
                     # CONTROL CONTINUO: PID latente estándar sobre el rank de varianza.
                     if is_healthy_reorg:
@@ -449,10 +460,10 @@ class TrainingController:
                         # agresiva que la recuperación (salida del colapso).
                         if eR_ctrl > 0:
                             # Penalización fuerte y rápida (riesgo inminente de colapso)
-                            self.lr_scale *= math.exp(-Kp_lr * eR_ctrl)
+                            self.lr_scale *= math.exp(-self.Kp_lr * eR_ctrl)
                         else:
                             # Recuperación lenta y controlada (salida del colapso, 10x más lenta)
-                            self.lr_scale *= math.exp(-0.1 * Kp_lr * eR_ctrl)
+                            self.lr_scale *= math.exp(-0.1 * self.Kp_lr * eR_ctrl)
                         
                     # Hard safety clamp: Garantiza que el aprendizaje nunca muera ni explote
                     self.lr_scale = max(min(self.lr_scale, 1.0), 0.25)
@@ -569,7 +580,7 @@ class TrainingController:
             'best_acc': self.best_acc,
             'patience': self.patience,
             'warmup_aborted': self.warmup_aborted,   # FIX #3: persiste post-resume
-            'temp_adj': self.temp_adj,
+            # E-1 FIX: temp_adj eliminado (código muerto — se calculaba pero nunca se aplicaba a τ)
             'history': self.history,
             # --- Observadores EMA ---
             'ema_unif': self.ema_unif.value,
@@ -620,7 +631,8 @@ class TrainingController:
         self.best_acc = state.get('best_acc', 0.0)
         self.patience = state.get('patience', 0)
         self.warmup_aborted = state.get('warmup_aborted', False)  # FIX #3
-        self.temp_adj = state.get('temp_adj', 0.0)
+        # E-1 FIX: temp_adj ya no se restaura (campo eliminado). Checkpoints
+        # antiguos que contengan 'temp_adj' simplemente lo ignoran.
         if 'history' in state:
             for k, v in state['history'].items():
                 if k in self.history:

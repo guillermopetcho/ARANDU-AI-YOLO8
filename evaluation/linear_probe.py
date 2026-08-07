@@ -59,7 +59,26 @@ def run_linear_probe(encoder, train_ds, val_ds, num_classes, config, device):
     optimizer = torch.optim.AdamW(param_groups, lr=1e-3)
     epochs = config.get('eval', {}).get('linear_probe_epochs', 25)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
+    # C-5 FIX: Class weights para datasets desbalanceados.
+    # Peso inversamente proporcional a la frecuencia de cada clase.
+    # Sin esto, el clasificador se sesga hacia la clase mayoritaria.
+    class_weights = None
+    targets = getattr(train_ds, 'targets', None)
+    if targets is None and hasattr(train_ds, 'samples'):
+        targets = [s[1] for s in train_ds.samples]
+    if targets is not None:
+        import numpy as np
+        class_counts = np.bincount(targets, minlength=num_classes).astype(np.float64)
+        # Peso inverso con suavizado: evita peso infinito para clases con 0 muestras
+        weights = 1.0 / (class_counts + 1.0)
+        weights = weights / weights.sum() * num_classes  # Normalizar a sum=num_classes
+        class_weights = torch.FloatTensor(weights).to(device)
+        logger.info(f"Linear Probe: class weights = {weights.round(3).tolist()}")
+
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=0.05
+    )
 
     n_workers = config['training']['num_workers']
     lp_batch = config.get('eval', {}).get('linear_probe_batch_size', 32)

@@ -94,9 +94,9 @@ def main():
     CONFIG["moco"]["local_loss_weight"] = profile["local_loss_weight"]
     CONFIG["moco"]["num_local_crops"] = profile["num_local_crops"]
 
-    # Ajustar grad_accum_steps para mantener EffBatch ≈ 256
+    # C-6 FIX: Ajustar grad_accum_steps para mantener EffBatch ≈ target_eff_batch
     gpus = world_size if is_distributed else 1
-    target_eff_batch = 256
+    target_eff_batch = CONFIG["training"].get("target_eff_batch", 256)
     CONFIG["training"]["grad_accum_steps"] = max(1, target_eff_batch // (profile["batch_size"] * gpus))
 
     if args.dataset_path:
@@ -227,7 +227,12 @@ def main():
     warmup_steps = max(1, CONFIG["training"]["warmup_epochs"] * math.ceil(len(train_loader) / CONFIG["training"]["grad_accum_steps"]))
     final_lr_ratio = CONFIG["training"].get("final_lr_ratio", 0.0)
 
-    scheduler = build_scheduler(optimizer, warmup_steps, total_steps, final_lr_ratio=final_lr_ratio)
+    restarts = CONFIG["training"].get("scheduler_restarts", 0)
+    restart_decay = CONFIG["training"].get("scheduler_restart_decay", 0.8)
+    scheduler = build_scheduler(
+        optimizer, warmup_steps, total_steps, final_lr_ratio=final_lr_ratio,
+        restarts=restarts, restart_decay=restart_decay
+    )
 
     trainer = MoCoTrainer(model_q, model_k, queue, optimizer, scheduler, scaler, CONFIG, device, is_distributed)
 
@@ -295,7 +300,8 @@ def main():
     if rank == 0:
         if not os.path.exists(log_file):
             with open(log_file, "w", newline="") as f:
-                csv.writer(f).writerow(["epoch", "loss", "lr", "knn_acc", "pos", "neg", "margin",
+                csv.writer(f).writerow(["epoch", "loss", "global_loss", "local_loss",
+                                        "lr", "knn_acc", "pos", "neg", "margin",
                                         "align", "unif", "psim", "nsim", "rnorm", "std", "norm", "qstd", "gn",
                                         "tput", "data_err"])
         if not os.path.exists(proj_log_file):
@@ -362,7 +368,12 @@ def main():
                     logger.info(" Best Geometric model guardado")
 
             log_buffer.append([
-                epoch+1, metrics['loss'], optimizer.param_groups[0]['lr'],
+                epoch+1, metrics['loss'],
+                # I-6 FIX: global_loss y local_loss separados para diagnóstico post-mortem.
+                # Antes solo se registraba 'loss' (total), impidiendo distinguir si un
+                # problema venía de los crops globales o locales.
+                metrics['global_loss'], metrics['local_loss'],
+                optimizer.param_groups[0]['lr'],
                 # BUG-M1 FIX: curr_acc sigue siendo -1 cuando esta époch no tuvo evaluación
                 # (eval_freq > 1). Escribir -1 en la columna knn_acc del CSV corrompe análisis
                 # posteriores (pandas trata -1 como dato válido, no como ausencia de dato).

@@ -200,3 +200,73 @@ def fast_knn(X_train: np.ndarray, y_train: np.ndarray,
 
     preds = votes.argmax(axis=1)
     return float(accuracy_score(y_val, preds))
+
+def _get_knn_preds(X_train: np.ndarray, y_train: np.ndarray,
+                   X_val: np.ndarray, k: int = 20) -> np.ndarray:
+    """Helper interno para obtener predicciones KNN sin calcular accuracy."""
+    if not HAS_FAISS:
+        knn = KNeighborsClassifier(n_neighbors=k, metric='cosine', n_jobs=-1)
+        knn.fit(X_train, y_train)
+        return knn.predict(X_val)
+        
+    X_train_norm = np.ascontiguousarray(X_train, dtype=np.float32)
+    X_val_norm   = np.ascontiguousarray(X_val,   dtype=np.float32)
+    faiss.normalize_L2(X_train_norm)
+    faiss.normalize_L2(X_val_norm)
+    
+    indices = _faiss_search(X_train_norm, X_val_norm, k)
+    num_classes = int(y_train.max()) + 1
+    neighbor_labels = y_train[indices]
+    neighbor_labels = np.clip(neighbor_labels, 0, num_classes - 1)
+    
+    votes = np.zeros((len(X_val_norm), num_classes), dtype=np.int32)
+    np.add.at(votes, (np.arange(len(X_val_norm))[:, None], neighbor_labels), 1)
+    return votes.argmax(axis=1)
+
+@torch.no_grad()
+def knn_stability_score(model, val_loader, augmenter, device, k=20):
+    """Mide qué fracción de imágenes mantienen su clase KNN bajo augmentación.
+    
+    Protocolo:
+      1. Extraer features originales → clasificar con KNN
+      2. Augmentar las mismas imágenes → extraer features → clasificar con KNN
+      3. Medir agreement entre predicciones 1 y 2
+      
+    Returns:
+        float: Agreement rate en [0, 1]. 1.0 = invariancia perfecta.
+    """
+    model.eval()
+    orig_feats, labels = [], []
+    aug_feats = []
+    
+    # Extraer el backbone real (desempaquetar DDP o MoCoWrapper si es necesario)
+    raw_model = model.module if hasattr(model, 'module') else model
+    if hasattr(raw_model, 'encoder'):
+        encoder = raw_model.encoder
+    else:
+        encoder = raw_model
+    
+    for x, y in val_loader:
+        x = x.to(device, non_blocking=True)
+        # Features originales
+        z_orig = encoder(x)
+        orig_feats.append(z_orig.cpu())
+        labels.append(y)
+        
+        # Features augmentadas
+        x_aug = augmenter(x)
+        z_aug = encoder(x_aug)
+        aug_feats.append(z_aug.cpu())
+        
+    orig_feats = torch.cat(orig_feats).numpy()
+    aug_feats = torch.cat(aug_feats).numpy()
+    labels = torch.cat(labels).numpy()
+    
+    # Usar las features originales como gallery (train) y como query (val)
+    orig_preds = _get_knn_preds(orig_feats, labels, orig_feats, k)
+    # Usar las features aumentadas como query, referenciando la gallery original
+    aug_preds = _get_knn_preds(orig_feats, labels, aug_feats, k)
+    
+    # Agreement: fracción de imágenes que mantienen su predicción
+    agreement = (orig_preds == aug_preds).mean()
+    return float(agreement)

@@ -81,6 +81,24 @@ def handle_evaluation(
     metrics['mu'] = mu
     metrics['eff_rank'] = eff_rank
 
+    from evaluation.knn import knn_stability_score
+    import torchvision.transforms as T
+    
+    # I-2 FIX: Calcular KNN Stability (Invariance) cada 5 epochs.
+    # Usamos RandomResizedCrop sobre los tensores ya procesados (CenterCrop+Normalize).
+    # Como son tensores, RRCrop funcionará bien.
+    if epoch % 5 == 0:
+        size_global = CONFIG['moco'].get('size_global', 224)
+        augmenter = T.RandomResizedCrop(size_global, scale=(0.5, 0.9), antialias=True)
+        try:
+            stability = knn_stability_score(
+                eval_model, eval_val_loader, augmenter, device, k=CONFIG["eval"]["knn_k"]
+            )
+            metrics['knn_stability'] = stability
+            logger.info(f"KNN Stability: {stability:.4f}")
+        except Exception as e:
+            logger.warning(f"Error calculando KNN Stability: {e}")
+
     return controller.step_epoch(epoch, curr_acc, metrics), curr_acc
 
 

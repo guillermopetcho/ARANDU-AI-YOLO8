@@ -6,7 +6,7 @@ training:
   warmup_epochs: 2   # Fase 1 desde cero: necesita más warmup que un refinamiento
   final_lr_ratio: 0.1  # Bajar bastante el LR al final para cristalizar bien
   batch_size: 16   # 384px: cabe bien en T4 con AMP
-  grad_accum_steps: 8   # EffBatch = 16 × 8 × 2 GPUs = 256
+  target_eff_batch: 256 # El script ajustará grad_accum_steps automáticamente
   num_workers: 4
   lr_base: 0.00002  # 2e-5: muy conservador, refinamiento fino
   weight_decay: 0.05
@@ -96,6 +96,9 @@ wandb:
   project: "MoCo-ENCODER"
 
 controller:
+  ema_beta_U: 0.7       # Memoria del error de uniformidad
+  ema_beta_D: 0.9       # Memoria del error de drift
+  ema_beta_R: 0.85      # Memoria del error de rank
   Kp_tau: 0.01          # Ganancia reducida: ajustes más conservadores de tau
   Ki_tau_ratio: 50.0
   Kp_alpha: 0.002       # Freno de momentum más suave

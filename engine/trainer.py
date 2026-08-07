@@ -1,5 +1,5 @@
 import time
-import logging
+import math
 import torch
 import torch.nn.functional as F
 from torch.amp import autocast
@@ -7,10 +7,20 @@ import torch.distributed as dist
 import contextlib
 from collections import defaultdict
 from tqdm.auto import tqdm
+from evaluation.knn import _knn_predict
 
 from utils.distributed import batch_shuffle_ddp, batch_unshuffle_ddp
 from utils.metrics import compute_metrics
 from engine.scheduler import momentum_update
+
+def vicreg_variance_loss(z, gamma=1.0):
+    """Penaliza dimensiones con varianza < gamma.
+    z: [B, D] — embeddings SIN L2-normalize (pre-projector o post-projector raw)
+    Evita el colapso dimensional parcial forzando actividad en todas las dimensiones.
+    """
+    # z.var(dim=0) + eps para estabilidad numérica en sqrt
+    std_z = torch.sqrt(z.var(dim=0) + 1e-4)  # [D]
+    return F.relu(gamma - std_z).mean()
 
 class MoCoTrainer:
     def __init__(self, model_q, model_k, queue, optimizer, scheduler, scaler, config, device, is_distributed):
@@ -36,6 +46,8 @@ class MoCoTrainer:
         pos_sim_sum, neg_sim_sum, grad_norm_sum, grad_steps = 0.0, 0.0, 0.0, 0
         norm_sum, queue_std_sum = 0.0, 0.0
         global_loss_sum, local_loss_sum = 0.0, 0.0
+        # I-1 FIX: Acumulador para texture agreement (coseno medio entre q global y q local)
+        texture_agreement_sum, texture_agreement_count = 0.0, 0
         valid_steps = 0
         # R-5 FIX: Contador de batches válidos (no-NaN) dentro de la ventana de acumulación
         # actual. Necesario para calcular accum_count correctamente cuando hay batches NaN
@@ -67,8 +79,10 @@ class MoCoTrainer:
             # local_crops es ahora una lista de tensores [ [B, C, H_i, W_i], ... ]
             
             # --- CURRICULUM DINÁMICO ---
+            # C-1 FIX: early-exit cuando curriculum_epoch <= 0 (filtro desactivado).
+            # Evita crear la list comprehension en cada batch cuando nunca filtrará nada.
             curriculum_epoch = self.config['training'].get('curriculum_epoch', 25)
-            if epoch < curriculum_epoch and local_crops is not None:
+            if curriculum_epoch > 0 and epoch < curriculum_epoch and local_crops is not None:
                 # Ignorar crops muy pequeños (64x64) antes de la época de estabilización
                 n_before = len(local_crops)
                 local_crops = [crop for crop in local_crops if crop.shape[-1] >= 96]
@@ -110,7 +124,7 @@ class MoCoTrainer:
             with sync_context:
                 with autocast(self.device_type, enabled=self.config['training']['use_amp']):
                     # === Vista Global 1: query usa predictor (MoCo v3) ===
-                    q1, q1_norm = self.model_q(v_q, use_predictor=True, return_norm=True)
+                    q1, q1_norm, q1_raw = self.model_q(v_q, use_predictor=True, return_norm=True, return_z_raw=True)
                     with torch.no_grad():
                         if self.is_distributed:
                             v_k_sh, idx1 = batch_shuffle_ddp(v_k)
@@ -124,7 +138,7 @@ class MoCoTrainer:
                     logits1 = (torch.cat([l_pos1, l_neg1], dim=1) / temp).clamp(-15, 15)
 
                     # === Vista Global 2: simétrica ===
-                    q2 = self.model_q(v_k, use_predictor=True)
+                    q2, q2_raw = self.model_q(v_k, use_predictor=True, return_z_raw=True)
                     with torch.no_grad():
                         if self.is_distributed:
                             v_q_sh, idx2 = batch_shuffle_ddp(v_q)
@@ -165,34 +179,46 @@ class MoCoTrainer:
                             v_local = torch.cat(crops, dim=0).contiguous().to(memory_format=torch.channels_last)
                             q_local = self.model_q(v_local, use_predictor=True)
                             
-                            # INVARIANTE BUG-C2 (verificado formalmente): el orden de
-                            # k1.repeat(N_crops, 1) COINCIDE con el de torch.cat(crops, dim=0).
-                            #
-                            # crops = [crop_0, crop_1, ..., crop_{N-1}], cada crop_i tiene shape [B, C, H, W].
-                            # torch.cat(crops, dim=0) produce:
-                            #   [img0_c0, img1_c0,..,imgB_c0, img0_c1,..,imgB_c1,...,img0_cN,..,imgB_cN]
-                            # k1.repeat(N_crops, 1) produce (k1 shape [B, D]):
-                            #   [img0_key, img1_key,..,imgB_key, img0_key,..,imgB_key,...]
-                            # => q_local[i] y k1_exp[i] siempre apuntan al mismo img_idx. ✓
-                            # NO modificar este repeat sin actualizar el invariante.
-                            k1_exp = k1.repeat(N_crops, 1)
-                            k2_exp = k2.repeat(N_crops, 1)
+                            # I-3 FIX: Multi-Crop con Teacher Keys locales.
+                            # Pasar los crops locales por el teacher genera keys dedicadas a esa escala.
+                            # Resuelve la asimetría 96px vs 384px que dificultaba aprender texturas.
+                            with torch.no_grad():
+                                if self.is_distributed:
+                                    v_local_sh, idx_local = batch_shuffle_ddp(v_local)
+                                    k_local = self.model_k(v_local_sh)
+                                    k_local = batch_unshuffle_ddp(k_local, idx_local)
+                                else:
+                                    k_local = self.model_k(v_local)
+                                    
                             labels_local = labels.repeat(N_crops)
                             
-                            l_pos_l1 = torch.einsum('nc,nc->n', [q_local, k1_exp]).unsqueeze(-1)
-                            l_neg_l1 = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
-                            logits_l1 = (torch.cat([l_pos_l1, l_neg_l1], dim=1) / temp).clamp(-15, 15)
+                            l_pos_local = torch.einsum('nc,nc->n', [q_local, k_local]).unsqueeze(-1)
+                            l_neg_local = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
+                            logits_local = (torch.cat([l_pos_local, l_neg_local], dim=1) / temp).clamp(-15, 15)
 
-                            l_pos_l2 = torch.einsum('nc,nc->n', [q_local, k2_exp]).unsqueeze(-1)
-                            l_neg_l2 = torch.einsum('nc,ck->nk', [q_local, self.queue.queue.detach()])
-                            logits_l2 = (torch.cat([l_pos_l2, l_neg_l2], dim=1) / temp).clamp(-15, 15)
-
-                            loss_local_step = (F.cross_entropy(logits_l1, labels_local) + F.cross_entropy(logits_l2, labels_local)) * 0.5
+                            loss_local_step = F.cross_entropy(logits_local, labels_local)
                             loss_local += loss_local_step * N_crops
-                            
+
+                            # I-1 FIX: Texture Agreement — coseno medio entre q global y q local.
+                            # Mide si el encoder produce features coherentes entre vistas
+                            # globales (384px) y locales (96px) de la misma imagen.
+                            # Rango: [-1, 1], ideal > 0.7. Se calcula sin forward adicional
+                            # usando q1 y q_local ya computados.
+                            with torch.no_grad():
+                                B = q1.shape[0]
+                                # q_local: [B*N_crops, D] → [N_crops, B, D] → mean → [B, D]
+                                q_local_grouped = q_local.detach().view(N_crops, B, -1)
+                                q_local_mean = F.normalize(q_local_grouped.mean(dim=0), dim=1)
+                                q1_norm = F.normalize(q1.detach(), dim=1)
+                                agreement = F.cosine_similarity(q1_norm, q_local_mean, dim=1).mean().item()
+                                texture_agreement_sum += agreement
+                                texture_agreement_count += 1
+
                         loss_local = loss_local / len(local_crops)
 
-                    loss = loss_global + self.local_loss_weight * loss_local
+                    # I-4 FIX: Término de varianza VICReg para evitar colapso dimensional parcial
+                    var_loss = (vicreg_variance_loss(q1_raw) + vicreg_variance_loss(q2_raw)) * 0.5
+                    loss = loss_global + self.local_loss_weight * loss_local + 0.04 * var_loss
 
                     # Aliases para métricas
                     q, k, l_pos, l_neg = q1, k1, l_pos1, l_neg1
@@ -348,6 +374,8 @@ class MoCoTrainer:
             'std': std_sum / num_steps,
             'norm': norm_sum / num_steps,
             'queue_std': queue_std_sum / num_steps,
+            # I-1 FIX: Texture agreement media del epoch. -999.0 si no hubo crops locales.
+            'texture_agreement': texture_agreement_sum / max(1, texture_agreement_count) if texture_agreement_count > 0 else -999.0,
             # M-2 FIX: float('nan') en lugar de None — csv.writer escribe None como el string "None"
             # que corrompe la columna gn para pandas. float('nan') se serializa como
             # vacío en CSV y WandB lo omite limpiamente sin romper gráficas.

@@ -99,17 +99,34 @@ class MetaController:
         health_score = (0.4 * safe_knn) + (0.2 * norm_align) + (0.2 * norm_unif) + (0.2 * std)
         self.semantic_state["health_score"] = health_score * 100
         
-        # 2. Texture Learning (Ratio local/global loss)
-        # Si el modelo domina las texturas, la pérdida local será muy pequeña respecto a la global.
-        texture_score = 1.0 - min(1.0, (local_loss / max(global_loss, 1e-5)) * 0.5)
-        self.semantic_state["texture"] = texture_score * 100
+        # 2. Texture Learning (Cross-View Agreement)
+        # I-1 FIX: La fórmula anterior (1 - local/global * 0.5) producía siempre ≈48%
+        # porque ambas pérdidas decaen proporcionalmente al compartir backbone y optimizer.
+        # Ahora usamos el coseno medio entre queries globales y locales del mismo batch:
+        # si el encoder aprendió texturas, un crop de 96px debe producir features
+        # coherentes con el crop global de 384px.
+        texture_agreement = metrics.get('texture_agreement', -999.0)
+        if texture_agreement > -2.0:  # Any valid cosine similarity is >= -1.0
+            # Rango original: [-1, 1] → escalado a [0, 100]
+            # Agreement 0.7 → 85%, Agreement 0.85 → 92.5%
+            # Escalar linealmente: (agreement + 1) / 2 -> [0, 1]
+            self.semantic_state["texture"] = ((texture_agreement + 1.0) / 2.0) * 100
+        else:
+            # Fallback si no hubo crops locales (ej. curriculum desactivado)
+            texture_score = 1.0 - min(1.0, (local_loss / max(global_loss, 1e-5)) * 0.5)
+            self.semantic_state["texture"] = texture_score * 100
         
         # 3. Structure Learning (Pérdida Global y Alineación)
         structure_score = (norm_align + norm_unif) / 2.0
         self.semantic_state["structure"] = structure_score * 100
         
         # 4. Scale Invariance (KNN robusto y Features estables)
-        invariance_score = safe_knn * std
+        # I-2 FIX: La fórmula anterior (safe_knn * std) mezclaba magnitudes incompatibles.
+        # KNN ∈ [0,1] × std ∈ [0.03, 0.08] → resultado siempre en [0%, 8%].
+        # Nueva fórmula: combina KNN (peso 70%) con std normalizada (peso 30%).
+        # std_normalized escala std al rango [0,1] donde 0.06+ es "bueno" para dim=256.
+        std_normalized = min(1.0, std / 0.06)  # std=0.06 → 1.0, std=0.03 → 0.5
+        invariance_score = 0.7 * safe_knn + 0.3 * std_normalized
         self.semantic_state["scale_invariance"] = invariance_score * 100
 
         # --- RE-EVALUACIÓN CURRICULAR (CADA 5 EPOCHS) ---
