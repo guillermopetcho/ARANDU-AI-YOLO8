@@ -7,7 +7,6 @@ import torch.distributed as dist
 import contextlib
 from collections import defaultdict
 from tqdm.auto import tqdm
-from evaluation.knn import _knn_predict
 
 from utils.distributed import batch_shuffle_ddp, batch_unshuffle_ddp
 from utils.metrics import compute_metrics
