@@ -22,6 +22,9 @@ import os
 import sys
 import logging
 
+# Asegurar que el raíz del proyecto esté en sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import torch
 import ultralytics.nn.modules as nn_modules
 from ultralytics import YOLO
