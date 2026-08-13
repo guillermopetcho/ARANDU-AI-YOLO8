@@ -3,67 +3,30 @@
 # =========================================================
 #
 # ⚠️  AJUSTAR nc AL NÚMERO REAL DE CLASES DEL DATASET ANTES DE ENTRENAR.
-# El data.yaml del dataset YOLO define el valor correcto en el campo 'nc'.
-# Ejemplos:
-#   nc: 5  → 5 clases (healthy, mosaic, frog_eye, bacterial_blight, potassium_deficiency)
-#   nc: 1  → detección binaria (sano vs. enfermo)
-# Usar el valor incorrecto aquí causa un error de dimensión en el Detect head.
 nc: 5  # Dataset soja: 5 clases de enfermedades
 
 # =========================================================
 # BACKBONE
 # =========================================================
 # AranduYOLOWrapper = AranduBackbone (ConvNeXt V2 Tiny).
-# Registrado en ultralytics.nn.modules por ablation_runner.py antes de
-# instanciar el modelo.
-#
-# Devuelve una lista de 4 tensores [P2, P3, P4, P5]:
-#   P2: [128ch, H/4,  W/4]   — micro-lesiones (Coordinate Attention)
-#   P3: [256ch, H/8,  W/8]   — lesiones pequeñas (Coordinate Attention)
-#   P4: [512ch, H/16, W/16]  — lesiones medias
-#   P5: [1024ch, H/32, W/32] — contexto semántico global
-#
-# Mapa de layers (absolutos):
-#   Layer 0 → AranduYOLOWrapper (genera la lista [P2, P3, P4, P5])
-#   Layer 1 → P2 adaptado  [128ch,  H/4]   (micro-lesiones aéreas)
-#   Layer 2 → P3 adaptado  [256ch,  H/8]   (small objects)
-#   Layer 3 → P4 adaptado  [512ch,  H/16]  (medium objects)
-#   Layer 4 → P5 adaptado  [1024ch, H/32]  (large objects / contexto)
+# Genera [P2, P3, P4, P5] y las capas Index extraen cada escala:
+#   0: AranduYOLOWrapper → tuple [P2, P3, P4, P5]
+#   1: Index 0 → P2: [128ch, H/4,  W/4]   (micro-lesiones)
+#   2: Index 1 → P3: [256ch, H/8,  W/8]   (lesiones pequeñas)
+#   3: Index 2 → P4: [512ch, H/16, W/16]  (lesiones medias)
+#   4: Index 3 → P5: [1024ch, H/32, W/32] (contexto semántico global)
 
 backbone:
   - [-1, 1, AranduYOLOWrapper, []]
+  - [0, 1, Index, [128, 0]]
+  - [0, 1, Index, [256, 1]]
+  - [0, 1, Index, [512, 2]]
+  - [0, 1, Index, [1024, 3]]
 
 # =========================================================
-# NECK (PAN-FPN — P2 a P5)
+# HEAD (FPN + PAN Neck + Detect Head — 4 escalas P2 a P5)
 # =========================================================
-#
-# Top-Down (FPN): P5 → P4 → P3 → P2
-#   5:  Upsample(P5)             → [1024ch, H/16]
-#   6:  Concat([P4, UP_P5])      → [1536ch, H/16]
-#   7:  C2f([6], 512)            → [512ch,  H/16]   ← P4_fpn
-#
-#   8:  Upsample(P4_fpn)         → [512ch,  H/8]
-#   9:  Concat([P3, UP_P4])      → [768ch,  H/8]
-#   10: C2f([9], 256)            → [256ch,  H/8]    ← P3_fpn
-#
-#   11: Upsample(P3_fpn)         → [256ch,  H/4]
-#   12: Concat([P2, UP_P3])      → [384ch,  H/4]
-#   13: C2f([12], 128)           → [128ch,  H/4]    ← P2_final (micro-lesiones)
-#
-# Bottom-Up (PAN): P2 → P3 → P4 → P5
-#   14: Conv(P2_final, stride=2) → [128ch,  H/8]
-#   15: Concat([P3_fpn, ↓P2])   → [384ch,  H/8]
-#   16: C2f([15], 256)           → [256ch,  H/8]    ← P3_final (small)
-#
-#   17: Conv(P3_final, stride=2) → [256ch,  H/16]
-#   18: Concat([P4_fpn, ↓P3])   → [768ch,  H/16]
-#   19: C2f([18], 512)           → [512ch,  H/16]   ← P4_final (medium)
-#
-#   20: Conv(P4_final, stride=2) → [512ch,  H/32]
-#   21: Concat([P5, ↓P4])        → [1536ch, H/32]
-#   22: C2f([21], 1024)          → [1024ch, H/32]   ← P5_final (large)
-
-neck:
+head:
   # --- FPN Top-Down ---
   - [4, 1, nn.Upsample, [None, 2, "nearest"]]    # 5:  Upsample P5
   - [[5, 3], 1, Concat, [1]]                      # 6:  Concat(UP_P5, P4)
@@ -90,13 +53,5 @@ neck:
   - [[20, 4], 1, Concat, [1]]                     # 21: Concat(↓P4, P5)
   - [21, 3, C2f, [1024]]                          # 22: P5_final (large)
 
-# =========================================================
-# HEAD (Detect — 4 escalas P2/P3/P4/P5)
-# =========================================================
-# P2_final  → layer 13 (128ch,  H/4)   → micro-lesiones y lesiones muy pequeñas
-# P3_final  → layer 16 (256ch,  H/8)   → objetos pequeños
-# P4_final  → layer 19 (512ch,  H/16)  → objetos medianos
-# P5_final  → layer 22 (1024ch, H/32)  → objetos grandes y contexto
-
-head:
-  - [[13, 16, 19, 22], 1, Detect, [nc]]
+  # --- Detect Head ---
+  - [[13, 16, 19, 22], 1, Detect, [nc]]           # 23: Detect Head

@@ -13,11 +13,15 @@ nc: 5
 # =========================================================
 backbone:
   - [-1, 1, AranduYOLOWrapper, []]
+  - [0, 1, Index, [128, 0]]
+  - [0, 1, Index, [256, 1]]
+  - [0, 1, Index, [512, 2]]
+  - [0, 1, Index, [1024, 3]]
 
 # =========================================================
-# SLIM NECK (PAN-FPN — 50% Canales, C2f n=1)
+# SLIM HEAD (FPN + PAN Neck + Segment Head — 50% Canales, C2f n=1)
 # =========================================================
-neck:
+head:
   # --- FPN Top-Down ---
   - [4, 1, nn.Upsample, [None, 2, "nearest"]]    # 5:  Upsample P5
   - [[5, 3], 1, Concat, [1]]                      # 6:  Concat(UP_P5, P4)
@@ -44,8 +48,5 @@ neck:
   - [[20, 4], 1, Concat, [1]]                     # 21: Concat(↓P4, P5)
   - [21, 1, C2f, [512]]                           # 22: P5_final (512ch)
 
-# =========================================================
-# HEAD (Segment — 4 escalas P2/P3/P4/P5)
-# =========================================================
-head:
-  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 128]]
+  # --- Segment Head ---
+  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 128]] # 23: Segment Head

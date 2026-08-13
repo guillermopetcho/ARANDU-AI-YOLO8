@@ -8,13 +8,25 @@ nc: 5  # Dataset soja: 5 clases de enfermedades
 # =========================================================
 # BACKBONE
 # =========================================================
+# AranduYOLOWrapper = AranduBackbone (ConvNeXt V2 Tiny).
+# Genera [P2, P3, P4, P5] y las capas Index extraen cada escala:
+#   0: AranduYOLOWrapper → tuple [P2, P3, P4, P5]
+#   1: Index 0 → P2: [128ch, H/4,  W/4]   (micro-lesiones)
+#   2: Index 1 → P3: [256ch, H/8,  W/8]   (lesiones pequeñas)
+#   3: Index 2 → P4: [512ch, H/16, W/16]  (lesiones medias)
+#   4: Index 3 → P5: [1024ch, H/32, W/32] (contexto semántico global)
+
 backbone:
   - [-1, 1, AranduYOLOWrapper, []]
+  - [0, 1, Index, [128, 0]]
+  - [0, 1, Index, [256, 1]]
+  - [0, 1, Index, [512, 2]]
+  - [0, 1, Index, [1024, 3]]
 
 # =========================================================
-# NECK (PAN-FPN — P2 a P5)
+# HEAD (FPN + PAN Neck + Segment Head — 4 escalas P2 a P5)
 # =========================================================
-neck:
+head:
   # --- FPN Top-Down ---
   - [4, 1, nn.Upsample, [None, 2, "nearest"]]    # 5:  Upsample P5
   - [[5, 3], 1, Concat, [1]]                      # 6:  Concat(UP_P5, P4)
@@ -41,14 +53,5 @@ neck:
   - [[20, 4], 1, Concat, [1]]                     # 21: Concat(↓P4, P5)
   - [21, 3, C2f, [1024]]                          # 22: P5_final (large)
 
-# =========================================================
-# HEAD (Segment — 4 escalas P2/P3/P4/P5)
-# =========================================================
-# Segment head: [inputs, repeats, Segment, [nc, nm, hidden_dim]]
-#   nc:         Número de clases (debe coincidir con data.yaml).
-#   nm=32:      Coeficientes de máscara (prototype masks). Valores típicos: 32.
-#               Aumentar a 64 si la segmentación es muy fina pero con coste de memoria.
-#   hidden=256: Dimensión oculta del branch de máscaras. Escalar proporcionalmente
-#               si se cambia nm o si el número de clases supera ~20.
-head:
-  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 256]]
+  # --- Segment Head ---
+  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 256]] # 23: Segment Head
