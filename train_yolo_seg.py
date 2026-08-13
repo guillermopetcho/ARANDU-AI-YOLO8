@@ -94,6 +94,28 @@ def register_backbone(encoder_path: str, phase: int = 1, use_coord_attn: bool = 
     return AranduYOLOWrapper
 
 
+def find_phase_weights(model, project: str, name: str, filename: str = "last.pt") -> str:
+    """Resuelve la ruta física del archivo de pesos guardado por Ultralytics."""
+    candidates = []
+    if hasattr(model, "trainer") and hasattr(model.trainer, "save_dir"):
+        candidates.append(os.path.join(str(model.trainer.save_dir), "weights", filename))
+
+    candidates.extend([
+        os.path.join("runs", "segment", project, name, "weights", filename),
+        os.path.join("runs", "detect", project, name, "weights", filename),
+        os.path.join(project, name, "weights", filename),
+    ])
+
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+
+    if filename == "last.pt":
+        return find_phase_weights(model, project, name, filename="best.pt")
+
+    return candidates[0]
+
+
 # ---------------------------------------------------------------------------
 # Utilidad: contar parámetros entrenables
 # ---------------------------------------------------------------------------
@@ -206,7 +228,7 @@ def train(args):
             exist_ok      = True,
         )
 
-        fase1_weights = os.path.join(project, "Fast_Fase1_Warmup", "weights", "last.pt")
+        fase1_weights = find_phase_weights(model, project, "Fast_Fase1_Warmup", "last.pt")
 
         # ── FASE 2: Fine-Tuning de Stages 2+3 (Stages 0+1 SSL congelados) ───
         logger.info("\n" + "─"*50)
@@ -243,7 +265,7 @@ def train(args):
             exist_ok      = True,
         )
 
-        best_model_path = os.path.join(project, "Fast_Fase2_FineTuning", "weights", "best.pt")
+        best_model_path = find_phase_weights(model, project, "Fast_Fase2_FineTuning", "best.pt")
 
     else:
         # ── MODO ESTÁNDAR (4 Fases) ──────────────────────────────────────────
@@ -287,7 +309,7 @@ def train(args):
             exist_ok      = True,
         )
 
-        fase_a_weights = os.path.join(project, "FaseA_Adapters", "weights", "last.pt")
+        fase_a_weights = find_phase_weights(model, project, "FaseA_Adapters", "last.pt")
 
         # ── FASE B: Descongelar P5 ───────────────────────────────────────────
         logger.info("\n" + "─"*50)
@@ -321,7 +343,7 @@ def train(args):
             exist_ok      = True,
         )
 
-        fase_b_weights = os.path.join(project, "FaseB_P5", "weights", "last.pt")
+        fase_b_weights = find_phase_weights(model, project, "FaseB_P5", "last.pt")
 
         # ── FASE C: Descongelar P4 ───────────────────────────────────────────
         logger.info("\n" + "─"*50)
@@ -357,7 +379,7 @@ def train(args):
             exist_ok      = True,
         )
 
-        fase_c_weights = os.path.join(project, "FaseC_P4P5", "weights", "last.pt")
+        fase_c_weights = find_phase_weights(model, project, "FaseC_P4P5", "last.pt")
 
         # ── FASE D: Full Fine-Tuning ──────────────────────────────────────────
         logger.info("\n" + "─"*50)
@@ -394,7 +416,7 @@ def train(args):
             exist_ok      = True,
         )
 
-        best_model_path = os.path.join(project, "FaseD_FullFT", "weights", "best.pt")
+        best_model_path = find_phase_weights(model, project, "FaseD_FullFT", "best.pt")
 
     # ── Resumen final ─────────────────────────────────────────────────────
     logger.info("\n" + "=" * 60)
