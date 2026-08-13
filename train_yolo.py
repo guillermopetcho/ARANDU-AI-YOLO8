@@ -29,8 +29,22 @@ if os.path.isdir(os.path.join(local_ultralytics, "ultralytics")):
 sys.path.insert(0, BASE_DIR)
 
 import torch
-import ultralytics.nn.modules as nn_modules
-from ultralytics import YOLO
+
+try:
+    import ultralytics.nn.modules as nn_modules
+    from ultralytics import YOLO
+except (ImportError, ModuleNotFoundError) as e:
+    sys.stderr.write(
+        "\n" + "="*75 + "\n"
+        "❌ ERROR: El paquete 'ultralytics' no está instalado en este entorno Python.\n"
+        "=========================================================================\n"
+        "Si estás en Kaggle/Colab, ejecuta esta orden en una celda previa:\n\n"
+        "    !pip install -q ultralytics\n\n"
+        "O si el proyecto tiene el submódulo ultralytics descargado:\n\n"
+        "    !git submodule update --init --recursive\n"
+        "=========================================================================\n\n"
+    )
+    sys.exit(1)
 
 from models.yolo_wrapper import AranduBackbone
 
