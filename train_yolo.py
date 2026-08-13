@@ -22,8 +22,11 @@ import os
 import sys
 import logging
 
-# Asegurar que el raíz del proyecto esté en sys.path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+local_ultralytics = os.path.join(BASE_DIR, "ultralytics")
+if os.path.isdir(os.path.join(local_ultralytics, "ultralytics")):
+    sys.path.insert(0, local_ultralytics)
+sys.path.insert(0, BASE_DIR)
 
 import torch
 import ultralytics.nn.modules as nn_modules
