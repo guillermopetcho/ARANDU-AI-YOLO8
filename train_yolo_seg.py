@@ -63,14 +63,26 @@ logger = logging.getLogger("AranduYOLO_Seg")
 # Registro del wrapper en Ultralytics
 # ---------------------------------------------------------------------------
 
+# Variables globales para serialización unpicklable de AranduYOLOWrapper
+_GLOBAL_ENCODER_PATH = None
+_GLOBAL_FREEZE_PHASE = 1
+_GLOBAL_USE_COORD_ATTN = True
+
+class AranduYOLOWrapper(AranduBackbone):
+    """Wrapper top-level para que torch.save / pickle puedan serializar el modelo."""
+    def __init__(self, *args, **kwargs):
+        if _GLOBAL_ENCODER_PATH:
+            kwargs['moco_checkpoint_path'] = _GLOBAL_ENCODER_PATH
+        kwargs['freeze_phase']         = _GLOBAL_FREEZE_PHASE
+        kwargs['use_coord_attn']       = _GLOBAL_USE_COORD_ATTN
+        super().__init__(*args, **kwargs)
+
 def register_backbone(encoder_path: str, phase: int = 1, use_coord_attn: bool = True):
     """Registra AranduYOLOWrapper en el espacio de nombres de Ultralytics."""
-    class AranduYOLOWrapper(AranduBackbone):
-        def __init__(self, *args, **kwargs):
-            kwargs['moco_checkpoint_path'] = encoder_path
-            kwargs['freeze_phase']         = phase
-            kwargs['use_coord_attn']       = use_coord_attn
-            super().__init__(*args, **kwargs)
+    global _GLOBAL_ENCODER_PATH, _GLOBAL_FREEZE_PHASE, _GLOBAL_USE_COORD_ATTN
+    _GLOBAL_ENCODER_PATH = encoder_path
+    _GLOBAL_FREEZE_PHASE = phase
+    _GLOBAL_USE_COORD_ATTN = use_coord_attn
 
     setattr(nn_modules, 'AranduYOLOWrapper', AranduYOLOWrapper)
     setattr(sys.modules['ultralytics.nn.modules'], 'AranduYOLOWrapper', AranduYOLOWrapper)
