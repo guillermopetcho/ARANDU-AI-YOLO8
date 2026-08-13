@@ -49,4 +49,4 @@ head:
   - [21, 1, C2f, [512]]                           # 22: P5_final (512ch)
 
   # --- Segment Head ---
-  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 128]] # 23: Segment Head
+  - [[16, 19, 22], 1, Segment, [nc, 32, 128]]    # 23: Segment Head (P3, P4, P5)

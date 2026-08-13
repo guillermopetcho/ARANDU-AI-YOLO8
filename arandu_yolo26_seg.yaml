@@ -24,7 +24,7 @@ backbone:
   - [0, 1, Index, [1024, 3]]
 
 # =========================================================
-# HEAD (FPN + PAN Neck + Segment Head — 4 escalas P2 a P5)
+# HEAD (FPN + PAN Neck + Segment Head — Escalas P3, P4, P5)
 # =========================================================
 head:
   # --- FPN Top-Down ---
@@ -38,7 +38,7 @@ head:
 
   - [10, 1, nn.Upsample, [None, 2, "nearest"]]   # 11: Upsample P3_fpn
   - [[11, 1], 1, Concat, [1]]                     # 12: Concat(UP_P3, P2)
-  - [12, 3, C2f, [128]]                           # 13: P2_final (micro-lesiones)
+  - [12, 3, C2f, [128]]                           # 13: P2_final (micro-lesiones en PAN)
 
   # --- PAN Bottom-Up ---
   - [13, 1, Conv, [128, 3, 2]]                   # 14: Downsample P2_final
@@ -54,4 +54,7 @@ head:
   - [21, 3, C2f, [1024]]                          # 22: P5_final (large)
 
   # --- Segment Head ---
-  - [[13, 16, 19, 22], 1, Segment, [nc, 32, 256]] # 23: Segment Head
+  # IMPORTANTE: Segment recibe [16, 19, 22] (P3, P4, P5) para que Proto(x[0])
+  # aplique upsample 2x sobre P3 (stride 8) produciendo protomáscaras con stride 4
+  # (imgsz/4), coincidiendo exactamente con la resolución esperada por el validador.
+  - [[16, 19, 22], 1, Segment, [nc, 32, 256]]    # 23: Segment Head
