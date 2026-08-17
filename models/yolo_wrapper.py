@@ -358,6 +358,42 @@ class AranduBackbone(nn.Module):
         # Aplicar modo train/eval correctamente
         self.train(mode=self.training)
 
+    def get_freeze_names(self) -> list[str]:
+        """
+        Retorna prefijos de parámetros a congelar en formato Ultralytics.
+
+        Ultralytics usa `freeze=["0.backbone.stages_0", ...]` para generar
+        `model.0.backbone.stages_0.` como prefijo de matching. Esta función
+        comunica al trainer cuáles partes del backbone están congeladas según
+        la fase actual del currículum, evitando que Ultralytics deshaga
+        nuestro congelamiento progresivo con su lógica de "safety net".
+
+        Naming de ConvNeXt V2 Tiny (timm features_only):
+          stem_0, stem_1        → Stem (patchify + LayerNorm)
+          stages_0              → Stage 0 / P2 (stride  4, 96ch)
+          stages_1              → Stage 1 / P3 (stride  8, 192ch)
+          stages_2              → Stage 2 / P4 (stride 16, 384ch)
+          stages_3              → Stage 3 / P5 (stride 32, 768ch)
+        """
+        # Todos los componentes del backbone que se pueden congelar
+        all_parts = ["stem_0", "stem_1", "stages_0", "stages_1", "stages_2", "stages_3"]
+
+        if self.phase == 1:
+            # Fase A: Todo el backbone congelado
+            frozen = all_parts
+        elif self.phase == 2:
+            # Fase B: Descongelamos stages_3 (P5)
+            frozen = ["stem_0", "stem_1", "stages_0", "stages_1", "stages_2"]
+        elif self.phase == 3:
+            # Fase C: Descongelamos stages_2+3 (P4+P5)
+            frozen = ["stem_0", "stem_1", "stages_0", "stages_1"]
+        else:
+            # Fase D: Nada congelado (full fine-tuning)
+            frozen = []
+
+        # Prefijo "0." porque AranduBackbone siempre es layer 0 en el YAML
+        return [f"0.backbone.{part}" for part in frozen]
+
     def train(self, mode: bool = True):
         """
         Sobrescribe train() para proteger la normalización del backbone

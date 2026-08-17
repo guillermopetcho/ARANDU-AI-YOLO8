@@ -130,8 +130,14 @@ def count_trainable(model) -> tuple[int, int]:
 # Currículum de Descongelado
 # ---------------------------------------------------------------------------
 
-def apply_phase(model: YOLO, phase: int, lr: float) -> float:
-    """Aplica la fase de descongelado sobre el modelo YOLO activo."""
+def apply_phase(model: YOLO, phase: int, lr: float) -> tuple[float, list[str]]:
+    """Aplica la fase de descongelado y retorna (lr_efectivo, freeze_names).
+
+    Returns:
+        tuple: (lr_efectivo, freeze_names) donde freeze_names es la lista de
+        prefijos a pasar al parámetro `freeze=` de model.train() para que
+        Ultralytics NO deshaga nuestro congelamiento progresivo.
+    """
     backbone = None
     for module in model.model.modules():
         if isinstance(module, AranduBackbone):
@@ -140,9 +146,10 @@ def apply_phase(model: YOLO, phase: int, lr: float) -> float:
 
     if backbone is None:
         logger.warning(" AranduBackbone no encontrado en el modelo. Ignorando fase.")
-        return lr
+        return lr, []
 
     backbone.set_training_phase(phase)
+    freeze_names = backbone.get_freeze_names()
     trainable, total = count_trainable(model)
 
     phase_names = {1: "A — Solo Adaptadores", 2: "B — +Stage3 P5",
@@ -153,7 +160,8 @@ def apply_phase(model: YOLO, phase: int, lr: float) -> float:
     logger.info(f" Fase {phase_names[phase]}")
     logger.info(f"   Parámetros entrenables: {trainable/1e6:.1f}M / {total/1e6:.1f}M total")
     logger.info(f"   LR efectivo: {effective_lr:.2e}")
-    return effective_lr
+    logger.info(f"   Freeze Ultralytics: {len(freeze_names)} grupos → {freeze_names}")
+    return effective_lr, freeze_names
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +180,7 @@ def train(args):
     logger.info(f"   Dataset      : {args.data}")
     logger.info(f"   Encoder      : {args.encoder}")
     logger.info(f"   Épocas       : {args.epochs} | Batch: {args.batch} | Imgsz: {args.imgsz}")
-    logger.info(f"   Modo         : {'🚀 FAST (2 Fases)' if args.fast else '🐢 STANDARD (4 Fases)'}")
+    logger.info(f"   Modo         : {'🚀 FAST (3 Fases)' if args.fast else '🐢 STANDARD (4 Fases)'}")
     logger.info(f"   Cache RAM/Disk: {args.cache} | Workers: {args.workers}")
     logger.info("=" * 60)
 
@@ -189,67 +197,137 @@ def train(args):
     model_yaml   = args.cfg if args.cfg else ("arandu_yolo26_slim_seg.yaml" if args.slim else "arandu_yolo26_seg.yaml")
     logger.info(f"   Modelo Spec  : {model_yaml}")
 
-    if args.fast:
-        # ── MODO ACELERADO (2 Fases) ─────────────────────────────────────────
-        epochs_warmup = max(3, min(5, args.epochs // 5))
-        epochs_ft     = max(1, args.epochs - epochs_warmup)
-        logger.info(f"📋 Distribución FAST: Warmup Adaptadores={epochs_warmup} épocas | Fine-Tuning={epochs_ft} épocas")
+    # ── Augmentaciones optimizadas para detección de manchas foliares ──────
+    # Las manchas de frogeye son pequeñas, con colores sutilmente distintos
+    # al tejido sano. Estos parámetros aumentan la sensibilidad del modelo
+    # a texturas finas y variaciones cromáticas en hojas de soja.
+    aug_params = dict(
+        degrees      = 15,      # Hojas son isótropas → rotación libre
+        scale        = 0.3,     # Zoom a lesiones pequeñas
+        hsv_h        = 0.02,    # Variación de matiz sutil (manchas vs sano)
+        hsv_s        = 0.8,     # Saturación amplia para robustez
+        hsv_v        = 0.5,     # Brillo moderado
+        mosaic       = 1.0,     # Mosaic completo
+        cos_lr       = True,    # Cosine annealing (estándar para SSL→downstream)
+    )
 
-        # ── FASE 1: Warmup solo Adaptadores (Backbone congelado) ─────────────
+    if args.fast:
+        # ══════════════════════════════════════════════════════════════════
+        # MODO ACELERADO (3 Fases)
+        #
+        #   Fase 1: Warmup de Adaptadores — backbone 100% congelado.
+        #           Solo adapters + neck + head aprenden.
+        #
+        #   Fase 2: Descongelar Stages 2+3 (P4+P5) — las capas semánticas
+        #           del backbone se adaptan al dominio, pero Stages 0+1
+        #           (texturas de bajo nivel aprendidas por SSL) se preservan.
+        #
+        #   Fase 3: Full Fine-Tuning — todo se actualiza con LR reducido
+        #           para convergencia final.
+        #
+        # Esta distribución de 3 fases evita el salto abrupto de phase=1
+        # (todo congelado) a phase=4 (todo liberado) que destruía las
+        # representaciones de textura del encoder SSL.
+        # ══════════════════════════════════════════════════════════════════
+        epochs_f1 = max(3, min(5, args.epochs // 8))
+        epochs_f2 = max(5, int((args.epochs - epochs_f1) * 0.35))
+        epochs_f3 = max(1, args.epochs - epochs_f1 - epochs_f2)
+        logger.info(f"📋 Distribución FAST 3-Fases: Warmup={epochs_f1} | P4+P5={epochs_f2} | FullFT={epochs_f3}")
+
+        # ── FASE 1: Warmup solo Adaptadores (Backbone congelado) ─────────
         logger.info("\n" + "─"*50)
-        logger.info("⚡ FASE 1/2 — Warmup de Adaptadores (Backbone congelado)")
+        logger.info("⚡ FASE 1/3 — Warmup de Adaptadores (Backbone congelado)")
         logger.info("─"*50)
 
         register_backbone(args.encoder, phase=1, use_coord_attn=True)
         model = YOLO(model_yaml, task="segment")
 
-        lr_w  = apply_phase(model, phase=1, lr=base_lr)
+        lr_f1, freeze_f1 = apply_phase(model, phase=1, lr=base_lr)
 
         model.train(
             task          = "segment",
             data          = args.data,
-            epochs        = epochs_warmup,
+            epochs        = epochs_f1,
             imgsz         = imgsz,
             batch         = batch,
-            lr0           = lr_w,
+            lr0           = lr_f1,
             lrf           = 0.1,
             weight_decay  = 0.0005,
             warmup_epochs = 1,
+            freeze        = freeze_f1,         # ← CRÍTICO: protege el backbone
             optimizer     = "AdamW",
             amp           = True,
             device        = device,
             workers       = workers,
             cache         = cache_opt,
             project       = project,
-            name          = "Fast_Fase1_Warmup",
+            name          = "Fast_F1_Warmup",
             seed          = 42,
             verbose       = True,
             save          = True,
             exist_ok      = True,
+            **aug_params,
         )
 
-        fase1_weights = find_phase_weights(model, project, "Fast_Fase1_Warmup", "last.pt")
+        f1_weights = find_phase_weights(model, project, "Fast_F1_Warmup", "last.pt")
 
-        # ── FASE 2: Fine-Tuning de Stages 2+3 (Stages 0+1 SSL congelados) ───
+        # ── FASE 2: Descongelar Stages 2+3 (P4+P5 adaptan al dominio) ────
         logger.info("\n" + "─"*50)
-        logger.info("⚡ FASE 2/2 — Fine-Tuning Adaptativo (Stages 2+3 liberados)")
+        logger.info("⚡ FASE 2/3 — Stages 2+3 liberados (P4+P5 adaptan al dominio)")
+        logger.info("─"*50)
+
+        register_backbone(None, phase=3, use_coord_attn=True)
+        model = YOLO(f1_weights, task="segment")
+        lr_f2, freeze_f2 = apply_phase(model, phase=3, lr=base_lr)
+
+        model.train(
+            task          = "segment",
+            data          = args.data,
+            epochs        = epochs_f2,
+            imgsz         = imgsz,
+            batch         = batch,
+            lr0           = lr_f2,
+            lrf           = 0.1,
+            weight_decay  = 0.0005,
+            warmup_epochs = 1,              # ← Warmup en transición
+            freeze        = freeze_f2,       # ← Protege Stages 0+1 + Stem
+            optimizer     = "AdamW",
+            amp           = True,
+            device        = device,
+            workers       = workers,
+            cache         = cache_opt,
+            project       = project,
+            name          = "Fast_F2_P4P5",
+            seed          = 42,
+            verbose       = True,
+            save          = True,
+            exist_ok      = True,
+            **aug_params,
+        )
+
+        f2_weights = find_phase_weights(model, project, "Fast_F2_P4P5", "last.pt")
+
+        # ── FASE 3: Full Fine-Tuning (LR reducido, convergencia final) ────
+        logger.info("\n" + "─"*50)
+        logger.info("⚡ FASE 3/3 — Full Fine-Tuning (convergencia final)")
         logger.info("─"*50)
 
         register_backbone(None, phase=4, use_coord_attn=True)
-        model = YOLO(fase1_weights, task="segment")
-        lr_ft = apply_phase(model, phase=4, lr=base_lr)
+        model = YOLO(f2_weights, task="segment")
+        lr_f3, freeze_f3 = apply_phase(model, phase=4, lr=base_lr * 0.3)
 
         results = model.train(
             task          = "segment",
             data          = args.data,
-            epochs        = epochs_ft,
+            epochs        = epochs_f3,
             imgsz         = imgsz,
             batch         = batch,
-            lr0           = lr_ft,
+            lr0           = lr_f3,
             lrf           = 0.05,
             weight_decay  = 0.0005,
-            warmup_epochs = 0,
+            warmup_epochs = 1,              # ← Warmup en transición
             close_mosaic  = close_mosaic,
+            freeze        = freeze_f3,       # ← [] en phase 4 (sin freeze)
             mixup         = 0.1,
             copy_paste    = 0.1,
             optimizer     = "AdamW",
@@ -258,17 +336,25 @@ def train(args):
             workers       = workers,
             cache         = cache_opt,
             project       = project,
-            name          = "Fast_Fase2_FineTuning",
+            name          = "Fast_F3_FullFT",
             seed          = 42,
             verbose       = True,
             save          = True,
             exist_ok      = True,
+            **aug_params,
         )
 
-        best_model_path = find_phase_weights(model, project, "Fast_Fase2_FineTuning", "best.pt")
+        best_model_path = find_phase_weights(model, project, "Fast_F3_FullFT", "best.pt")
 
     else:
-        # ── MODO ESTÁNDAR (4 Fases) ──────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════════════
+        # MODO ESTÁNDAR (4 Fases)
+        #
+        #   Fase A (phase=1): Solo adaptadores. Backbone 100% congelado.
+        #   Fase B (phase=2): + Stage 3 (P5). Semántica de alto nivel.
+        #   Fase C (phase=3): + Stage 2 (P4). Features intermedias.
+        #   Fase D (phase=4): Full Fine-Tuning. Convergencia final.
+        # ══════════════════════════════════════════════════════════════════
         epochs_A = min(10, args.epochs // 4)
         epochs_B = min(15, args.epochs // 4)
         epochs_C = min(15, args.epochs // 4)
@@ -276,7 +362,7 @@ def train(args):
 
         logger.info(f"📋 Distribución de fases: A={epochs_A} | B={epochs_B} | C={epochs_C} | D={epochs_D}")
 
-        # ── FASE A: Solo adaptadores ──────────────────────────────────────────
+        # ── FASE A: Solo adaptadores ──────────────────────────────────────
         logger.info("\n" + "─"*50)
         logger.info(" FASE A — Backbone congelado. Solo SpatialFeatureAdapters.")
         logger.info("─"*50)
@@ -284,7 +370,7 @@ def train(args):
         register_backbone(args.encoder, phase=1, use_coord_attn=True)
         model = YOLO(model_yaml, task="segment")
 
-        lr_A  = apply_phase(model, phase=1, lr=base_lr)
+        lr_A, freeze_A = apply_phase(model, phase=1, lr=base_lr)
 
         model.train(
             task          = "segment",
@@ -296,6 +382,7 @@ def train(args):
             lrf           = 0.1,
             weight_decay  = 0.0005,
             warmup_epochs = 2,
+            freeze        = freeze_A,       # ← CRÍTICO
             optimizer     = "AdamW",
             amp           = True,
             device        = device,
@@ -307,18 +394,19 @@ def train(args):
             verbose       = True,
             save          = True,
             exist_ok      = True,
+            **aug_params,
         )
 
         fase_a_weights = find_phase_weights(model, project, "FaseA_Adapters", "last.pt")
 
-        # ── FASE B: Descongelar P5 ───────────────────────────────────────────
+        # ── FASE B: Descongelar P5 ───────────────────────────────────────
         logger.info("\n" + "─"*50)
         logger.info("🔓 FASE B — Descongelando Stage 3 (P5, semántica global).")
         logger.info("─"*50)
 
         register_backbone(None, phase=2, use_coord_attn=True)
         model = YOLO(fase_a_weights, task="segment")
-        lr_B  = apply_phase(model, phase=2, lr=base_lr)
+        lr_B, freeze_B = apply_phase(model, phase=2, lr=base_lr)
 
         model.train(
             task          = "segment",
@@ -330,6 +418,7 @@ def train(args):
             lrf           = 0.1,
             weight_decay  = 0.0005,
             warmup_epochs = 1,
+            freeze        = freeze_B,       # ← Protege Stem + Stages 0,1,2
             optimizer     = "AdamW",
             amp           = True,
             device        = device,
@@ -341,18 +430,19 @@ def train(args):
             verbose       = True,
             save          = True,
             exist_ok      = True,
+            **aug_params,
         )
 
         fase_b_weights = find_phase_weights(model, project, "FaseB_P5", "last.pt")
 
-        # ── FASE C: Descongelar P4 ───────────────────────────────────────────
+        # ── FASE C: Descongelar P4 ───────────────────────────────────────
         logger.info("\n" + "─"*50)
         logger.info(" FASE C — Descongelando Stage 2 (P4, features medias).")
         logger.info("─"*50)
 
         register_backbone(None, phase=3, use_coord_attn=True)
         model = YOLO(fase_b_weights, task="segment")
-        lr_C  = apply_phase(model, phase=3, lr=base_lr)
+        lr_C, freeze_C = apply_phase(model, phase=3, lr=base_lr)
 
         model.train(
             task          = "segment",
@@ -364,6 +454,7 @@ def train(args):
             lrf           = 0.1,
             weight_decay  = 0.0005,
             warmup_epochs = 1,
+            freeze        = freeze_C,       # ← Protege Stem + Stages 0,1
             mixup         = 0.1,
             copy_paste    = 0.1,
             optimizer     = "AdamW",
@@ -377,18 +468,19 @@ def train(args):
             verbose       = True,
             save          = True,
             exist_ok      = True,
+            **aug_params,
         )
 
         fase_c_weights = find_phase_weights(model, project, "FaseC_P4P5", "last.pt")
 
-        # ── FASE D: Full Fine-Tuning ──────────────────────────────────────────
+        # ── FASE D: Full Fine-Tuning ──────────────────────────────────────
         logger.info("\n" + "─"*50)
         logger.info(" FASE D — Full Fine-Tuning.")
         logger.info("─"*50)
 
         register_backbone(None, phase=4, use_coord_attn=True)
         model = YOLO(fase_c_weights, task="segment")
-        lr_D  = apply_phase(model, phase=4, lr=base_lr * 0.3)
+        lr_D, freeze_D = apply_phase(model, phase=4, lr=base_lr * 0.3)
 
         results = model.train(
             task          = "segment",
@@ -399,8 +491,9 @@ def train(args):
             lr0           = lr_D,
             lrf           = 0.05,
             weight_decay  = 0.0005,
-            warmup_epochs = 0,
+            warmup_epochs = 1,
             close_mosaic  = close_mosaic,
+            freeze        = freeze_D,       # ← [] en phase 4 (sin freeze)
             mixup         = 0.1,
             copy_paste    = 0.1,
             optimizer     = "AdamW",
@@ -414,6 +507,7 @@ def train(args):
             verbose       = True,
             save          = True,
             exist_ok      = True,
+            **aug_params,
         )
 
         best_model_path = find_phase_weights(model, project, "FaseD_FullFT", "best.pt")
@@ -447,7 +541,7 @@ def parse_args():
     parser.add_argument("--lr",           type=float, default=0.001, help="LR base (default: 0.001).")
     parser.add_argument("--device",       type=str, default="0",  help="GPU(s): '0', '0,1', 'cpu'.")
     parser.add_argument("--project",      type=str, default="AranduYOLO_Seg_runs", help="Directorio de salida.")
-    parser.add_argument("--fast",         action="store_true", help="Modo 2 fases ultrarrápido con caché en RAM.")
+    parser.add_argument("--fast",         action="store_true", help="Modo 3 fases acelerado con descongelado gradual.")
     parser.add_argument("--slim",         action="store_true", help="Usar arquitectura Slim-YOLO con 50%% menos canales en el neck (arandu_yolo26_slim_seg.yaml).")
     parser.add_argument("--cfg",          type=str, default="", help="Ruta personalizada a especificación YAML del modelo.")
     parser.add_argument("--cache",        type=str, default="ram", choices=["ram", "disk", "none", "false"], help="Caché de imágenes (default: ram).")

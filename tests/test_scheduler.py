@@ -49,12 +49,12 @@ def optimizer_and_scheduler():
 # ---------------------------------------------------------------------------
 
 class TestWarmup:
-    def test_lr_starts_at_1_percent(self, optimizer_and_scheduler):
-        """Al inicio (step 0), el LR debe ser ~1% del LR base (factor 0.01)."""
+    def test_lr_starts_at_10_percent(self, optimizer_and_scheduler):
+        """Al inicio (step 0), el LR debe ser ~10% del LR base (factor 0.10)."""
         opt, scheduler, base_lr, *_ = optimizer_and_scheduler
         lr_step0 = opt.param_groups[0]['lr']
-        assert abs(lr_step0 - base_lr * 0.01) < 1e-7, (
-            f"LR en step 0 debería ser ~{base_lr * 0.01:.6f}, got {lr_step0:.6f}"
+        assert abs(lr_step0 - base_lr * 0.10) < 1e-7, (
+            f"LR en step 0 debería ser ~{base_lr * 0.10:.6f}, got {lr_step0:.6f}"
         )
 
     def test_lr_is_monotonically_increasing_during_warmup(self, optimizer_and_scheduler):
