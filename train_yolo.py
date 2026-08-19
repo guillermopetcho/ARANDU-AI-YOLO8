@@ -190,6 +190,8 @@ def train(args):
     model_yaml   = args.cfg if args.cfg else ("arandu_yolo26_slim.yaml" if args.slim else "arandu_yolo26.yaml")
     logger.info(f"   Modelo Spec  : {model_yaml}")
 
+    imgsz_final  = args.imgsz_final if args.imgsz_final > 0 else imgsz
+
     aug_params = dict(
         degrees      = 15,
         scale        = 0.3,
@@ -198,6 +200,8 @@ def train(args):
         hsv_v        = 0.5,
         mosaic       = 1.0,
         cos_lr       = True,
+        cls          = 0.7,
+        overlap_mask = True,
     )
 
     if args.fast:
@@ -292,7 +296,7 @@ def train(args):
             task          = "detect",
             data          = args.data,
             epochs        = epochs_f3,
-            imgsz         = imgsz,
+            imgsz         = imgsz_final,        # ← Escalado a mayor resolución para Full FT
             batch         = batch,
             lr0           = lr_f3,
             lrf           = 0.05,
@@ -448,7 +452,7 @@ def train(args):
             task          = "detect",
             data          = args.data,
             epochs        = epochs_D,
-            imgsz         = imgsz,
+            imgsz         = imgsz_final,        # ← Escalado a mayor resolución para Full FT
             batch         = batch,
             lr0           = lr_D,
             lrf           = 0.05,
@@ -497,7 +501,8 @@ def parse_args():
     parser.add_argument("--encoder",      required=True,  help="Ruta al encoder SSL exportado (.pth).")
     parser.add_argument("--epochs",       type=int, default=100, help="Épocas totales (default: 100).")
     parser.add_argument("--batch",        type=int, default=16,  help="Batch size (default: 16).")
-    parser.add_argument("--imgsz",        type=int, default=640, help="Tamaño de imagen (default: 640).")
+    parser.add_argument("--imgsz",        type=int, default=512, help="Tamaño de imagen base (default: 512).")
+    parser.add_argument("--imgsz_final",  type=int, default=640, help="Tamaño de imagen para la fase final Full FT (default: 640, 0=mismo que imgsz).")
     parser.add_argument("--lr",           type=float, default=0.001, help="LR base (default: 0.001).")
     parser.add_argument("--device",       type=str, default="0",  help="GPU(s): '0', '0,1', 'cpu'.")
     parser.add_argument("--project",      type=str, default="AranduYOLO_runs", help="Directorio de salida.")
@@ -506,7 +511,7 @@ def parse_args():
     parser.add_argument("--cfg",          type=str, default="", help="Ruta personalizada a especificación YAML del modelo.")
     parser.add_argument("--cache",        type=str, default="ram", choices=["ram", "disk", "none", "false"], help="Caché de imágenes (default: ram).")
     parser.add_argument("--workers",      type=int, default=8,   help="DataLoader worker threads (default: 8).")
-    parser.add_argument("--close_mosaic", type=int, default=10,  help="Desactivar mosaic en últimas N épocas (default: 10).")
+    parser.add_argument("--close_mosaic", type=int, default=15,  help="Desactivar mosaic en últimas N épocas (default: 15).")
     return parser.parse_args()
 
 

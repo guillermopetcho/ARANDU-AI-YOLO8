@@ -197,10 +197,13 @@ def train(args):
     model_yaml   = args.cfg if args.cfg else ("arandu_yolo26_slim_seg.yaml" if args.slim else "arandu_yolo26_seg.yaml")
     logger.info(f"   Modelo Spec  : {model_yaml}")
 
+    imgsz_final  = args.imgsz_final if args.imgsz_final > 0 else imgsz
+
     # ── Augmentaciones optimizadas para detección de manchas foliares ──────
     # Las manchas de frogeye son pequeñas, con colores sutilmente distintos
     # al tejido sano. Estos parámetros aumentan la sensibilidad del modelo
-    # a texturas finas y variaciones cromáticas en hojas de soja.
+    # a texturas finas, calibran la pérdida de clasificación e imponen
+    # resolución de solapamientos entre máscaras.
     aug_params = dict(
         degrees      = 15,      # Hojas son isótropas → rotación libre
         scale        = 0.3,     # Zoom a lesiones pequeñas
@@ -209,6 +212,8 @@ def train(args):
         hsv_v        = 0.5,     # Brillo moderado
         mosaic       = 1.0,     # Mosaic completo
         cos_lr       = True,    # Cosine annealing (estándar para SSL→downstream)
+        cls          = 0.7,     # Ligeramente mayor ponderación de clasificación
+        overlap_mask = True,    # Calibración de pérdidas en zonas con solapamiento
     )
 
     if args.fast:
@@ -320,7 +325,7 @@ def train(args):
             task          = "segment",
             data          = args.data,
             epochs        = epochs_f3,
-            imgsz         = imgsz,
+            imgsz         = imgsz_final,        # ← Escalado a mayor resolución para Full FT
             batch         = batch,
             lr0           = lr_f3,
             lrf           = 0.05,
@@ -486,7 +491,7 @@ def train(args):
             task          = "segment",
             data          = args.data,
             epochs        = epochs_D,
-            imgsz         = imgsz,
+            imgsz         = imgsz_final,        # ← Escalado a mayor resolución para Full FT
             batch         = batch,
             lr0           = lr_D,
             lrf           = 0.05,
@@ -537,7 +542,8 @@ def parse_args():
     parser.add_argument("--encoder",      required=True,  help="Ruta al encoder SSL exportado (.pth).")
     parser.add_argument("--epochs",       type=int, default=100, help="Épocas totales (default: 100).")
     parser.add_argument("--batch",        type=int, default=16,  help="Batch size (default: 16).")
-    parser.add_argument("--imgsz",        type=int, default=640, help="Tamaño de imagen (default: 640).")
+    parser.add_argument("--imgsz",        type=int, default=512, help="Tamaño de imagen base (default: 512).")
+    parser.add_argument("--imgsz_final",  type=int, default=640, help="Tamaño de imagen para la fase final Full FT (default: 640, 0=mismo que imgsz).")
     parser.add_argument("--lr",           type=float, default=0.001, help="LR base (default: 0.001).")
     parser.add_argument("--device",       type=str, default="0",  help="GPU(s): '0', '0,1', 'cpu'.")
     parser.add_argument("--project",      type=str, default="AranduYOLO_Seg_runs", help="Directorio de salida.")
@@ -546,7 +552,7 @@ def parse_args():
     parser.add_argument("--cfg",          type=str, default="", help="Ruta personalizada a especificación YAML del modelo.")
     parser.add_argument("--cache",        type=str, default="ram", choices=["ram", "disk", "none", "false"], help="Caché de imágenes (default: ram).")
     parser.add_argument("--workers",      type=int, default=8,   help="DataLoader worker threads (default: 8).")
-    parser.add_argument("--close_mosaic", type=int, default=10,  help="Desactivar mosaic en últimas N épocas (default: 10).")
+    parser.add_argument("--close_mosaic", type=int, default=15,  help="Desactivar mosaic en últimas N épocas (default: 15).")
     return parser.parse_args()
 
 
